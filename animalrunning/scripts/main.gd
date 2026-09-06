@@ -10,6 +10,12 @@ enum State { MENU, PLAYING, RESULT }
 var _state: State = State.MENU
 ## 本局受到的伤害次数（成就「无伤通关」判定用）
 var _hits_taken: int = 0
+## 本局已使用的复活次数（C4）
+var _revives_used: int = 0
+## 是否正在等待玩家决定「要不要复活」
+var _awaiting_revive: bool = false
+## 死亡时的成绩快照：复活超时 / 放弃后用它进入结算
+var _death_result: Dictionary = {}
 
 
 func _ready() -> void:
@@ -34,6 +40,8 @@ func _ready() -> void:
 	hud.pause_requested.connect(_toggle_pause)
 	hud.quit_requested.connect(_abandon_run)
 	hud.restart_requested.connect(_restart_run)
+	hud.revive_requested.connect(_do_revive)
+	hud.revive_declined.connect(_decline_revive)
 
 	ui.start_requested.connect(_start_game)
 	ui.result_replay.connect(_start_game)
@@ -64,6 +72,9 @@ func _start_game() -> void:
 	hud.set_paused(false)
 	_state = State.PLAYING
 	_hits_taken = 0
+	_revives_used = 0
+	_awaiting_revive = false
+	_death_result = {}
 	ui.hide_all()
 
 	world.visible = true
@@ -94,13 +105,47 @@ func _finish(completed: bool, score: int, coins: int, distance: float) -> void:
 	_state = State.RESULT
 	hud.visible = false
 	ui.show_result(GameState.current_level, completed, score, coins, distance, _hits_taken,
-		world.trick_score, world.max_combo)
+		world.trick_score, world.max_combo, _revives_used)
 
 
 func _on_player_died(score: int, coins: int, distance: float) -> void:
-	# 等倒地动画播完再弹结算
+	# 还有复活机会时先问一句，别急着进结算（C4）
+	if _revives_used < GameConfig.REVIVE_MAX_PER_RUN and GameState.can_revive():
+		_death_result = {"score": score, "coins": coins, "distance": distance}
+		_awaiting_revive = true
+		hud.show_revive(GameConfig.REVIVE_COST)
+		return
 	await get_tree().create_timer(0.9).timeout
 	_finish(false, score, coins, distance)
+
+
+## 复活：扣货币后原地继续本局
+func _do_revive() -> void:
+	if not _awaiting_revive:
+		return
+	_awaiting_revive = false
+	hud.hide_revive()
+	if not GameState.spend_revive():
+		await get_tree().create_timer(0.3).timeout
+		_finish_death()
+		return
+	_revives_used += 1
+	world.revive()
+
+
+## 放弃复活 / 倒计时结束：照常进结算
+func _decline_revive() -> void:
+	if not _awaiting_revive:
+		return
+	_awaiting_revive = false
+	hud.hide_revive()
+	await get_tree().create_timer(0.35).timeout
+	_finish_death()
+
+
+func _finish_death() -> void:
+	_finish(false, int(_death_result.get("score", 0)), int(_death_result.get("coins", 0)),
+		float(_death_result.get("distance", 0.0)))
 
 
 func _on_level_completed(score: int, coins: int, distance: float) -> void:
@@ -110,14 +155,27 @@ func _on_level_completed(score: int, coins: int, distance: float) -> void:
 
 # ---------------------------------------------------------------- 输入
 func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		var key := event as InputEventKey
-		var code: int = key.physical_keycode
-		if code == KEY_NONE:
-			code = key.keycode
-		if code == KEY_ESCAPE:
-			_toggle_pause()
+	if not (event is InputEventKey) or not (event as InputEventKey).pressed \
+			or (event as InputEventKey).echo:
+		return
+	var key := event as InputEventKey
+	var code: int = key.physical_keycode
+	if code == KEY_NONE:
+		code = key.keycode
+
+	# 复活提示期间（C4）：R 续命、ESC 结束，此时不该再触发暂停
+	if _awaiting_revive:
+		if code == KEY_R:
+			_do_revive()
 			get_viewport().set_input_as_handled()
+		elif code == KEY_ESCAPE:
+			_decline_revive()
+			get_viewport().set_input_as_handled()
+		return
+
+	if code == KEY_ESCAPE:
+		_toggle_pause()
+		get_viewport().set_input_as_handled()
 
 
 func _toggle_pause() -> void:

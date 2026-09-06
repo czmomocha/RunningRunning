@@ -177,6 +177,21 @@ func character_cost(index: int) -> int:
 	return int(GameConfig.character(index).get("cost", 0))
 
 
+# ---------------------------------------------------------------- 复活 / 续关（C4）
+## 货币是否够一次复活
+func can_revive() -> bool:
+	return coins_total >= GameConfig.REVIVE_COST
+
+
+## 扣除一次复活的花费。成功返回 true，货币不足返回 false（不扣钱）。
+func spend_revive() -> bool:
+	if coins_total < GameConfig.REVIVE_COST:
+		return false
+	coins_total -= GameConfig.REVIVE_COST
+	save()
+	return true
+
+
 ## 花费货币解锁角色。成功（或早已解锁）返回 true；货币不足返回 false。
 func try_unlock_character(index: int) -> bool:
 	if is_character_unlocked(index):

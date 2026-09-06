@@ -1,8 +1,9 @@
 class_name Player
 extends CharacterBody3D
 ## 玩家：方块动物。
-## 自动向前奔跑（World 每帧写入 forward_speed），玩家负责换道 / 跳跃 / 快速下落。
-## 支持键盘（A/D、←/→、空格、W/S）与触屏滑动（←/→ 换道、↑ 跳、↓ 快落）。
+## 自动向前奔跑（World 每帧写入 forward_speed），玩家负责 换道 / 跳跃 / 滑铲 / 快速下落。
+## 其中「下」键按所处状态分流：地面滑铲（B4）、空中快速下落。
+## 支持键盘（A/D、←/→、空格、W/S）与触屏滑动（←/→ 换道、↑ 跳、↓ 滑铲 / 快落）。
 ##
 ## 受击：撞到障碍或被追兵碰到扣 1 点生命，随后进入无敌（可穿过障碍）并短暂减速；
 ## 生命归零或掉出地面则本局结束。死亡判定由外部 Hazard 区域触发，另有兜底卡死检测。
@@ -22,6 +23,15 @@ const LANE_HOLD_DELAY := 0.26
 const LANE_HOLD_REPEAT := 0.16
 ## 低于此高度即认定「正在坠入坑洞」，用于播放坠落音
 const FALLING_Y := -1.5
+## 站立 / 滑铲两套碰撞盒。
+## 站立时顶端约 1.55 m，会撞上横杆（下沿 1.15 m）；滑铲时压到约 0.93 m，可以从下方穿过。
+const STAND_HEIGHT := 1.5
+const STAND_Y := 0.8
+const SLIDE_HEIGHT := 0.95
+const SLIDE_Y := 0.45
+
+## 是否处于滑铲低姿（B4）。压低碰撞盒后可穿过横杆下方
+var sliding: bool = false
 
 ## 由 World 每帧写入的基础前进速度（未计入角色倍率）
 var forward_speed: float = 0.0
@@ -48,6 +58,15 @@ var _model: Node3D
 var _shield_shell: MeshInstance3D
 var _legs: Array[Node3D] = []
 var _leg_rest_rot: Array[Vector3] = []
+## 碰撞胶囊与它的形状：滑铲时要压低高度才能穿过横杆
+var _col: CollisionShape3D
+var _capsule: CapsuleShape3D
+
+# --- 滑铲状态（B4）---
+var _slide_left := 0.0
+var _slide_cd := 0.0
+var _slide_buffer := 0.0
+var _slide_pose := 0.0        # 0 站立 / 1 完全伏低，用于平滑过渡
 
 var _jump_buffer := 0.0
 var _fast_fall := false
@@ -88,13 +107,21 @@ func _ready() -> void:
 
 # ---------------------------------------------------------------- 构建
 func _build_collision() -> void:
-	var col := CollisionShape3D.new()
-	var capsule := CapsuleShape3D.new()
-	capsule.radius = 0.42
-	capsule.height = 1.5
-	col.shape = capsule
-	col.position.y = 0.8
-	add_child(col)
+	_col = CollisionShape3D.new()
+	_capsule = CapsuleShape3D.new()
+	_capsule.radius = 0.42
+	_capsule.height = STAND_HEIGHT
+	_col.shape = _capsule
+	_col.position.y = STAND_Y
+	add_child(_col)
+
+
+## 切换站立 / 低姿碰撞盒
+func _set_crouch(on: bool) -> void:
+	if _capsule == null:
+		return
+	_capsule.height = SLIDE_HEIGHT if on else STAND_HEIGHT
+	_col.position.y = SLIDE_Y if on else STAND_Y
 
 
 ## 应用角色配置（外观 + 属性倍率），并设定本局生命上限
@@ -166,11 +193,18 @@ func reset() -> void:
 	_falling = false
 	_hold_dir = 0
 	_hold_cd = 0.0
+	sliding = false
+	_slide_left = 0.0
+	_slide_cd = 0.0
+	_slide_buffer = 0.0
+	_slide_pose = 0.0
 
 	_update_collision_mask()
+	_set_crouch(false)
 	position = Vector3(GameConfig.lane_x(lane), 0.05, GameConfig.PLAYER_START_Z)
 	_model_pivot.rotation = Vector3.ZERO
 	_model_pivot.position = Vector3.ZERO
+	_model_pivot.scale = Vector3.ONE
 	if _model != null:
 		_model.visible = true
 	if _shield_shell != null:
@@ -187,6 +221,10 @@ func die() -> void:
 	emit_signal("hp_changed", hp, max_hp)
 	Sfx.play("death")
 
+	_end_slide()
+	_update_collision_mask()
+	_set_crouch(false)
+
 	# 倒地动画
 	var tween := create_tween()
 	tween.set_parallel(true)
@@ -194,6 +232,88 @@ func die() -> void:
 	tween.tween_property(_model_pivot, "position:y", 0.25, 0.35)
 
 	emit_signal("died")
+
+
+## 复活（C4）：原地满血起身，并附带一段无敌时间，避免刚站起来又被撞。
+## [param at_z] 由 World 挑选的安全落点（掉进坑洞时要挪回实地）。
+func revive(at_z: float) -> void:
+	alive = true
+	running = true
+	hp = max_hp
+	velocity = Vector3.ZERO
+	target_lane = GameConfig.clamp_lane(target_lane)
+	lane = target_lane
+	position = Vector3(GameConfig.lane_x(lane), 0.05, at_z)
+	_invincible = GameConfig.REVIVE_INVINCIBLE
+	_hit_slow = 0.0
+	_stuck_frames = 0
+	_falling = false
+	_fast_fall = false
+	_jump_buffer = 0.0
+	_hold_dir = 0
+	_hold_cd = 0.0
+	sliding = false
+	_slide_left = 0.0
+	_slide_cd = 0.0
+	_slide_buffer = 0.0
+	_slide_pose = 0.0
+	_was_on_floor = true
+
+	_set_crouch(false)
+	_update_collision_mask()
+	if _model_pivot != null:
+		_model_pivot.rotation = Vector3.ZERO
+		_model_pivot.position = Vector3.ZERO
+		_model_pivot.scale = Vector3.ONE
+	if _model != null:
+		_model.visible = true
+	if _shield_shell != null:
+		_shield_shell.visible = shielded
+
+	emit_signal("hp_changed", hp, max_hp)
+	Sfx.play("revive")
+
+
+# ---------------------------------------------------------------- 滑铲（B4）
+## 按下「下 / S」：地面进入滑铲，空中则是快速下落。
+## 落地前提早按下也会缓存下来，落地当帧自动接上滑铲。
+func request_down() -> void:
+	_slide_buffer = GameConfig.SLIDE_BUFFER
+	if not is_on_floor():
+		_fast_fall = true
+
+
+func _start_slide() -> void:
+	if sliding:
+		return
+	sliding = true
+	_slide_left = GameConfig.SLIDE_TIME
+	_slide_buffer = 0.0
+	_set_crouch(true)
+	Sfx.play("slide", randf_range(0.95, 1.06))
+
+
+func _end_slide() -> void:
+	if not sliding:
+		return
+	sliding = false
+	_slide_left = 0.0
+	_slide_cd = GameConfig.SLIDE_COOLDOWN
+	_set_crouch(false)
+
+
+## 主循环里推进滑铲计时（起跳、离地、时间到都会解除低姿）
+func _update_slide(delta: float) -> void:
+	if _slide_cd > 0.0:
+		_slide_cd -= delta
+	if _slide_buffer > 0.0:
+		_slide_buffer -= delta
+	if sliding:
+		_slide_left -= delta
+		if _slide_left <= 0.0 or not is_on_floor():
+			_end_slide()
+	elif _slide_buffer > 0.0 and is_on_floor() and _slide_cd <= 0.0:
+		_start_slide()
 
 
 ## 受到一次伤害，返回是否真的扣血（无敌 / 冲刺穿透期间或非对局中返回 false）。
@@ -303,6 +423,9 @@ func _physics_process(delta: float) -> void:
 		velocity.x = 0.0
 		lane = target_lane
 
+	# --- 滑铲（B4）：低姿从横杆下方穿过；空中按「下」仍是快速下落 ---
+	_update_slide(delta)
+
 	# --- 垂直运动 / 跳跃 ---
 	if not is_on_floor():
 		velocity.y += GameConfig.GRAVITY * delta
@@ -314,6 +437,7 @@ func _physics_process(delta: float) -> void:
 		if is_on_floor():
 			velocity.y = GameConfig.JUMP_VELOCITY * _jump_mul
 			_jump_buffer = 0.0
+			_end_slide()  # 起跳解除低姿，避免从下方顶到横杆
 			# 跳跃力越强音调越高，不同角色手感有区分
 			Sfx.play("jump", randf_range(0.97, 1.05) * _jump_mul)
 
@@ -369,10 +493,20 @@ func _update_invincible(delta: float) -> void:
 
 
 func _animate(delta: float) -> void:
+	# 滑铲姿态：整个人伏低、后仰、略微拉长，一眼能看出「低姿通过」
+	_slide_pose = move_toward(_slide_pose, 1.0 if sliding else 0.0, delta * 11.0)
+	_model_pivot.scale = Vector3(
+		lerpf(1.0, 1.14, _slide_pose),
+		lerpf(1.0, 0.56, _slide_pose),
+		lerpf(1.0, 1.20, _slide_pose))
+	_model_pivot.rotation.x = lerpf(0.0, -0.5, _slide_pose)
+
 	# 跑动颠簸
 	var rate := 4.0 + forward_speed * 0.42
 	_bob_time += delta * rate
 	var amp := 0.14 if is_on_floor() else 0.04
+	if sliding:
+		amp = 0.0
 	_model_pivot.position.y = absf(sin(_bob_time)) * amp
 
 	# 脚步声跟着摆腿节奏（sin 每过半周期算一步），音量压得很低只当节奏底噪
@@ -382,8 +516,8 @@ func _animate(delta: float) -> void:
 			Sfx.play("step", randf_range(0.9, 1.12), -7.0)
 	_last_step = step
 
-	# 摆腿
-	var swing := 0.55 if running else 0.0
+	# 摆腿（滑铲时双腿收起，不再摆动）
+	var swing := 0.0 if sliding else (0.55 if running else 0.0)
 	for i in _legs.size():
 		var phase := _bob_time + (PI if i % 2 == 0 else 0.0)
 		_legs[i].rotation.x = _leg_rest_rot[i].x + sin(phase) * swing
@@ -430,7 +564,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif d.y < 0.0:
 			_jump_buffer = GameConfig.JUMP_BUFFER_TIME
 		else:
-			_fast_fall = true
+			request_down()
 
 
 func _handle_key(event: InputEventKey) -> void:
@@ -451,7 +585,8 @@ func _handle_key(event: InputEventKey) -> void:
 			KEY_SPACE, KEY_UP, KEY_W:
 				_jump_buffer = GameConfig.JUMP_BUFFER_TIME
 			KEY_DOWN, KEY_S:
-				_fast_fall = true
+				# 同一个键：地面滑铲、空中快速下落
+				request_down()
 
 
 ## 松开按键：清除按住状态（任何时候都有效，见 _unhandled_input 的说明）

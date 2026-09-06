@@ -136,7 +136,7 @@ func _build() -> void:
 
 	# ---------------------------------------------------------- 底部操作提示
 	var hint := UiTheme.label(
-		"← → / A D 换道　　空格 跳跃　　↓ / S 快速下落　　ESC 暂停　　也支持鼠标 / 触屏滑动",
+		"← → / A D 换道　　空格 跳跃　　↓ / S 地面滑铲 · 空中快落　　ESC 暂停　　也支持鼠标 / 触屏滑动",
 		15, GameConfig.COLOR_MUTED, HORIZONTAL_ALIGNMENT_CENTER)
 	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	hint.offset_top = -52.0

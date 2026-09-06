@@ -113,7 +113,8 @@ func _stat_row(name_text: String, value_text: String, color: Color, big := false
 
 ## 展示结算数据
 func show_result(level_index: int, completed: bool, score: int, coins: int,
-		distance: float, hits: int, trick_score: int = 0, max_combo: int = 0) -> void:
+		distance: float, hits: int, trick_score: int = 0, max_combo: int = 0,
+		revives: int = 0) -> void:
 	var lv := GameConfig.level(level_index)
 	var diff := GameConfig.difficulty(GameState.difficulty_index)
 	var diff_id := String(diff["id"])
@@ -151,6 +152,9 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 		"+%d（累计 %d）" % [coins, GameState.coins_total], GameConfig.COLOR_ACCENT))
 	_rows.add_child(_stat_row("最高连击", "×%d" % max_combo, GameConfig.COLOR_INFO))
 	_rows.add_child(_stat_row("技巧得分", "+%d" % trick_score, GameConfig.COLOR_INFO))
+	if revives > 0:
+		_rows.add_child(_stat_row("原地复活", "%d 次 · 消耗 %d 货币" % [
+			revives, revives * GameConfig.REVIVE_COST], GameConfig.COLOR_BAD))
 	_rows.add_child(_stat_row("基础得分", str(score), GameConfig.COLOR_TEXT))
 	_rows.add_child(_stat_row("难度加成", "×%.1f" % float(diff["score"]), GameConfig.COLOR_INFO))
 

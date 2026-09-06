@@ -392,6 +392,28 @@ func _on_player_died() -> void:
 	emit_signal("player_died", score, coins, distance)
 
 
+## 复活 / 续关（C4）：把玩家放回安全地面、清空追兵，从当前里程继续跑。
+## 货币的扣除交给 GameState（调用方先扣再调这里），世界只负责场面复位。
+func revive() -> void:
+	var z := player.position.z
+	if player.position.y < -0.5:
+		# 掉进坑洞的情形：必须往前挪到最近的实地，否则人站在深渊里
+		for _i in 12:
+			if not pit_ahead(z, GameConfig.ROW_LENGTH + 2.0):
+				break
+			z -= GameConfig.ROW_LENGTH
+
+	# 追兵全部撤走：刚站起来就被贴脸不成立，也给玩家重新找回节奏的时间
+	for e in _active_enemies:
+		e.despawn()
+		_enemy_pool.append(e)
+	_active_enemies.clear()
+	_enemy_timer = GameConfig.ENEMY_SPAWN_MAX
+
+	player.revive(z)
+	running = true
+
+
 func _finish_level() -> void:
 	if not running:
 		return
@@ -443,6 +465,7 @@ func _physics_process(delta: float) -> void:
 			combo = 0
 
 	_update_powerups(delta)
+	_update_dynamics()
 	_update_tricks()
 	_recycle_chunks()
 	_update_enemies(delta)
@@ -555,6 +578,7 @@ func _populate_chunk(c: Chunk) -> void:
 		_release(_obstacle_pool, o)
 	c.obstacles.clear()
 	c.obs.clear()
+	c.dyn.clear()
 	for m in c.coins:
 		_release(_coin_pool, m)
 	c.coins.clear()
@@ -628,7 +652,10 @@ func _populate_chunk(c: Chunk) -> void:
 			for k in mini(count, GameConfig.LANE_COUNT - 3):
 				var l: int = candidates[k]
 				blocked.append(l)
-				_spawn_obstacle(c, l, z_world)
+				# 平移障碍只给「本行唯一且不在边缘车道」的障碍，
+				# 避免扫到相邻障碍上、或横移出赛道
+				var mover_ok: bool = count == 1 and l > 0 and l < GameConfig.LANE_COUNT - 1
+				_spawn_obstacle(c, l, z_world, mover_ok)
 
 		# 坑洞正上方不放金币（拿不到），但落地行可以放，奖励敢跳的玩家
 		if not pit_rows.has(r):
@@ -670,6 +697,50 @@ func _obstacle_chance() -> float:
 	return clampf((base + distance * 0.00012) * _obstacle_mul, 0.2, 0.95)
 
 
+# ================================================================ 动态障碍（B5）
+## 左右平移障碍 / 周期开合闸门。
+## 两者都由固定的正弦 / 三角波驱动（而非随机），玩家可以数节拍预判，
+## 于是「什么时候通过」也成为一个需要判断的维度，而不只是「走哪条道」。
+func _update_dynamics() -> void:
+	for c in _chunks:
+		for d in c.dyn:
+			var node: Node3D = d["node"]
+			var info: Dictionary = d["o"]
+			if d["mode"] == "mover":
+				var x: float = float(d["base_x"]) + sin(
+					_time * float(d["w"]) + float(d["phase"])) * float(d["amp"])
+				node.position.x = x
+				# 技巧判定与敌人 AI 都读这份记录，必须跟着一起走
+				info["x"] = x
+				var l := GameConfig.lane_of_x(x)
+				info["l0"] = l
+				info["l1"] = l
+			else:
+				var closed := _gate_curve(
+					fmod(_time / GameConfig.GATE_PERIOD + float(d["phase"]), 1.0))
+				# 完全打开时整个闸门沉到地面以下，既看不见也不挡路
+				var open_y: float = -float(d["h"]) * 0.5 - 0.3
+				node.position.y = lerpf(open_y, float(d["base_y"]), closed)
+				info["open"] = closed < 0.55
+
+
+## 闸门的开合曲线：0 = 完全打开（沉入地面），1 = 完全关闭（立起挡路）。
+## 升降各占 GATE_TRANS 个周期，用 smoothstep 过渡，观感是「缓缓升起」而非瞬移。
+func _gate_curve(t: float) -> float:
+	var open_end := GameConfig.GATE_OPEN_RATIO
+	var trans := GameConfig.GATE_TRANS
+	var v := 1.0
+	if t < open_end - trans:
+		v = 0.0
+	elif t < open_end:
+		v = (t - (open_end - trans)) / trans
+	elif t < 1.0 - trans:
+		v = 1.0
+	else:
+		v = 1.0 - (t - (1.0 - trans)) / trans
+	return smoothstep(0.0, 1.0, clampf(v, 0.0, 1.0))
+
+
 ## 坑洞出现概率：由主题的 gap 决定，并随跑动距离小幅提升
 func _pit_chance() -> float:
 	var base := float(_theme.get("gap", 0.0))
@@ -679,13 +750,20 @@ func _pit_chance() -> float:
 
 
 # ================================================================ 障碍物
-func _spawn_obstacle(c: Chunk, lane: int, z_world: float) -> void:
+## [param allow_mover] 本行只有这一个障碍、且不在赛道边缘时，才允许它左右平移（B5）
+func _spawn_obstacle(c: Chunk, lane: int, z_world: float, allow_mover: bool = false) -> void:
 	var difficulty := clampf(distance / 1200.0, 0.0, 1.0)
 	var roll := _rng.randf()
+	# 横杆（B4）：悬在半空，站着会撞上、跳也跳不过，只能滑铲穿过
+	var bar := distance > GameConfig.BAR_MIN_DISTANCE \
+		and _rng.randf() < GameConfig.BAR_CHANCE
+
 	var size: Vector3
 	var color: Color
-
-	if roll < 0.45 - difficulty * 0.15:
+	if bar:
+		size = Vector3(GameConfig.LANE_WIDTH * 0.92, GameConfig.BAR_HEIGHT, 0.9)
+		color = _theme["bar"]
+	elif roll < 0.45 - difficulty * 0.15:
 		size = Vector3(GameConfig.LANE_WIDTH * 0.80, 0.9, 1.0)   # 矮栏：可以跳过去
 		color = _theme["low"]
 	elif roll < 0.80:
@@ -695,21 +773,50 @@ func _spawn_obstacle(c: Chunk, lane: int, z_world: float) -> void:
 		size = Vector3(GameConfig.LANE_WIDTH * 0.90, 1.7, 2.2)   # 大方块
 		color = _theme["block"]
 
+	# 动态障碍（B5）：高墙变周期开合闸门，独行障碍左右平移
+	var dyn := ""
+	if not bar and distance > GameConfig.DYNAMIC_MIN_DISTANCE:
+		if size.y >= 2.0 and _rng.randf() < GameConfig.GATE_CHANCE:
+			dyn = "gate"
+		elif allow_mover and _rng.randf() < GameConfig.MOVER_CHANCE:
+			dyn = "mover"
+
+	var y_center := size.y * 0.5
+	if bar:
+		y_center = GameConfig.BAR_BOTTOM + GameConfig.BAR_HEIGHT * 0.5
+
 	var obs := _acquire(_obstacle_pool, _create_obstacle)
-	_setup_obstacle(obs, size, color, Vector3(GameConfig.lane_x(lane), size.y * 0.5, z_world - c.start_z))
+	_setup_obstacle(obs, size, color,
+		Vector3(GameConfig.lane_x(lane), y_center, z_world - c.start_z), bar)
 	c.root.add_child(obs)
 	c.obstacles.append(obs)
 
 	# 记录车道占用信息，供敌人 AI 避障查询；
-	# x / low 额外供技巧判定（B3）使用
-	c.obs.append({
+	# x / low 额外供技巧判定（B3）使用，bar 供滑铲判定（B4）
+	var info := {
 		"l0": lane,
 		"l1": lane,
 		"z0": z_world + size.z * 0.5,
 		"z1": z_world - size.z * 0.5,
 		"x": GameConfig.lane_x(lane),
 		"low": size.y <= 1.0,
-	})
+		"bar": bar,
+		"open": false,
+	}
+	c.obs.append(info)
+
+	if dyn != "":
+		c.dyn.append({
+			"node": obs,
+			"o": info,
+			"mode": dyn,
+			"base_x": GameConfig.lane_x(lane),
+			"base_y": y_center,
+			"h": size.y,
+			"amp": GameConfig.MOVER_AMP,
+			"w": _rng.randf_range(GameConfig.MOVER_SPEED_MIN, GameConfig.MOVER_SPEED_MAX),
+			"phase": _rng.randf() * TAU,
+		})
 
 	# 矮栏上方放奖励金币，鼓励跳跃
 	if size.y <= 1.0 and _rng.randf() < 0.4:
@@ -755,19 +862,37 @@ func _create_obstacle() -> Node3D:
 	root.add_child(hazard)
 	hazard.body_entered.connect(_on_hazard_body_entered)
 
+	# 横杆的立柱（B4）：纯装饰，不参与碰撞。没有它横杆看起来像浮在半空。
+	for side in [-1.0, 1.0]:
+		var post := MeshInstance3D.new()
+		post.name = "PostL" if side < 0.0 else "PostR"
+		post.mesh = BoxMesh.new()
+		var pmat := StandardMaterial3D.new()
+		pmat.roughness = 0.85
+		pmat.metallic = 0.15
+		post.material_override = pmat
+		post.visible = false
+		root.add_child(post)
+
 	root.set_meta("mesh", mesh)
 	root.set_meta("col", col)
 	root.set_meta("hcol", hcol)
 	return root
 
 
-func _setup_obstacle(root: Node3D, size: Vector3, color: Color, pos: Vector3) -> void:
+func _setup_obstacle(root: Node3D, size: Vector3, color: Color, pos: Vector3,
+		bar: bool = false) -> void:
 	root.position = pos
 	root.visible = true
 
 	var mesh := root.get_meta("mesh") as MeshInstance3D
 	(mesh.mesh as BoxMesh).size = size
-	(mesh.material_override as StandardMaterial3D).albedo_color = color
+	var mat := mesh.material_override as StandardMaterial3D
+	mat.albedo_color = color
+	# 横杆自带发光，远远就能认出「这条道要滑铲」
+	mat.emission_enabled = bar
+	mat.emission = color
+	mat.emission_energy = 0.42 if bar else 0.0
 
 	var col := root.get_meta("col") as CollisionShape3D
 	(col.shape as BoxShape3D).size = size
@@ -775,6 +900,22 @@ func _setup_obstacle(root: Node3D, size: Vector3, color: Color, pos: Vector3) ->
 	var hcol := root.get_meta("hcol") as CollisionShape3D
 	# 判定盒在前进方向略大于视觉体积，确保玩家被挡住之前就已触发
 	(hcol.shape as BoxShape3D).size = size + Vector3(0.0, 0.0, 0.4)
+
+	# 立柱：从地面顶到杆子下沿
+	var bottom := pos.y - size.y * 0.5
+	var post_h := maxf(bottom, 0.02)
+	for name in ["PostL", "PostR"]:
+		if not root.has_node(name):
+			continue
+		var p := root.get_node(name) as MeshInstance3D
+		p.visible = bar
+		if not bar:
+			continue
+		(p.mesh as BoxMesh).size = Vector3(0.16, post_h, 0.16)
+		p.position = Vector3(
+			(1.0 if name == "PostR" else -1.0) * (size.x * 0.5 - 0.08),
+			-(size.y * 0.5 + post_h * 0.5), 0.0)
+		(p.material_override as StandardMaterial3D).albedo_color = color.darkened(0.45)
 
 
 func _on_hazard_body_entered(body: Node3D) -> void:
@@ -1029,6 +1170,7 @@ func _create_powerup() -> Area3D:
 # ================================================================ 技巧计分（B3）
 ## 每物理帧：追踪滞空区间（跳栏 / 飞坑在落地时结算），障碍通过时判定擦身。
 func _update_tricks() -> void:
+	_score_slide_under()
 	if not player.is_on_floor():
 		if is_nan(_air_z_start):
 			_air_z_start = player.position.z
@@ -1037,6 +1179,24 @@ func _update_tricks() -> void:
 		_score_landing_tricks(_air_z_start, player.position.z)
 		_air_z_start = NAN
 	_score_near_misses()
+
+
+## 滑铲穿杆（B4）：低姿从横杆正下方通过才计分。
+## 逐帧记录「是否曾在杆下保持低姿」，而不是看通过瞬间的姿态——
+## 否则玩家在杆下提前起身就白滑了，判定会变得很难触发。
+func _score_slide_under() -> void:
+	for c in _chunks:
+		for o in c.obs:
+			if not bool(o.get("bar", false)) or bool(o.get("under_scored", false)):
+				continue
+			var pz := player.position.z
+			if pz <= float(o["z0"]) + 0.6 and pz >= float(o["z1"]) - 0.6:
+				if player.sliding and absf(player.position.x - float(o["x"])) < 1.8:
+					o["under"] = true
+			elif pz < float(o["z1"]) - 0.6:
+				o["under_scored"] = true
+				if bool(o.get("under", false)):
+					_add_trick(GameConfig.TRICK_SLIDE)
 
 
 ## 落地结算：滞空区间 [z_land, z_takeoff] 内越过的矮栏与坑洞
@@ -1065,6 +1225,9 @@ func _score_near_misses() -> void:
 				continue
 			if float(o["z1"]) < player.position.z - 0.8:
 				o["passed"] = true
+				# 闸门沉在地下时不该算「擦身而过」（B5）
+				if bool(o.get("open", false)):
+					continue
 				# 矮栏绕行没有难度，只奖励高墙 / 大方块的擦身
 				if player.is_on_floor() and not bool(o.get("low", false)):
 					var dx := absf(player.position.x - float(o["x"]))
@@ -1196,6 +1359,9 @@ func lane_blocked_ahead(z: float, lane: int, ahead: float) -> bool:
 	var z_lo := z - ahead
 	for c in _chunks:
 		for o in c.obs:
+			# 闸门处于「打开」状态时不算挡路（B5）
+			if bool(o.get("open", false)):
+				continue
 			if lane >= o["l0"] and lane <= o["l1"]:
 				if o["z1"] < z_hi and o["z0"] > z_lo:
 					return true
@@ -1304,3 +1470,4 @@ class Chunk extends RefCounted:
 	var decos: Array[Node3D] = []         # 纯装饰
 	var obs: Array[Dictionary] = []       # 障碍的车道占用信息，供敌人 AI 与技巧判定查询
 	var pits: Array[Dictionary] = []      # 坑洞的 z 范围，供敌人 AI 与技巧判定查询
+	var dyn: Array[Dictionary] = []       # 动态障碍（B5）：平移 / 开合闸门

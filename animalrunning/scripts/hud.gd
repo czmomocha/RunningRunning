@@ -8,6 +8,9 @@ extends CanvasLayer
 signal pause_requested
 signal quit_requested
 signal restart_requested
+## 复活（C4）：玩家选择续关 / 放弃继续
+signal revive_requested
+signal revive_declined
 
 var _world: World
 var _font: Font
@@ -33,6 +36,11 @@ var _damage_flash: ColorRect
 var _hp_warning := false
 ## 道具状态标签（B2）：id -> Label
 var _powerup_labels: Dictionary = {}
+## 复活提示面板（C4）
+var _revive_layer: Control
+var _revive_info: Label
+var _revive_time: Label
+var _revive_left: float = 0.0
 
 
 func setup(world: World) -> void:
@@ -281,6 +289,62 @@ func _build_ui() -> void:
 	quit_btn.pressed.connect(func() -> void: quit_requested.emit())
 	pause_box.add_child(quit_btn)
 
+	# ---------------------------------------------------------- 复活提示（C4）
+	# 被追上后先问一句要不要续命，再决定进结算，避免「手滑死了就白跑一局」
+	_revive_layer = Control.new()
+	_revive_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_revive_layer.visible = false
+	root.add_child(_revive_layer)
+
+	var rdim := ColorRect.new()
+	rdim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rdim.color = Color8(0x05, 0x09, 0x12, 170)
+	rdim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_revive_layer.add_child(rdim)
+
+	var rpanel := UiTheme.panel(GameConfig.COLOR_PANEL, 22, GameConfig.COLOR_ACCENT, 3, 18)
+	rpanel.set_anchors_preset(Control.PRESET_CENTER)
+	rpanel.offset_left = -235.0
+	rpanel.offset_right = 235.0
+	rpanel.offset_top = -165.0
+	rpanel.offset_bottom = 165.0
+	_revive_layer.add_child(rpanel)
+
+	var rbox := VBoxContainer.new()
+	rbox.alignment = BoxContainer.ALIGNMENT_CENTER
+	rbox.add_theme_constant_override("separation", 12)
+	rpanel.add_child(rbox)
+
+	rbox.add_child(UiTheme.title("被追上了！", 34))
+	rbox.add_child(UiTheme.label("还想再跑一段吗？", 15, GameConfig.COLOR_MUTED,
+		HORIZONTAL_ALIGNMENT_CENTER))
+
+	var rgap := Control.new()
+	rgap.custom_minimum_size = Vector2(0.0, 4.0)
+	rbox.add_child(rgap)
+
+	_revive_info = UiTheme.label("", 17, GameConfig.COLOR_TEXT, HORIZONTAL_ALIGNMENT_CENTER)
+	_revive_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	rbox.add_child(_revive_info)
+
+	_revive_time = UiTheme.label("", 26, GameConfig.COLOR_ACCENT, HORIZONTAL_ALIGNMENT_CENTER)
+	rbox.add_child(_revive_time)
+
+	var rbtn_row := HBoxContainer.new()
+	rbtn_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	rbtn_row.add_theme_constant_override("separation", 12)
+	rbox.add_child(rbtn_row)
+
+	var revive_btn := UiTheme.button("原地复活 (R)", GameConfig.COLOR_GOOD,
+		Vector2(186.0, 54.0), 20)
+	revive_btn.pressed.connect(func() -> void: revive_requested.emit())
+	rbtn_row.add_child(revive_btn)
+
+	var giveup_btn := UiTheme.button("就此结束 (ESC)", GameConfig.COLOR_BAD,
+		Vector2(158.0, 54.0), 17, true)
+	giveup_btn.pressed.connect(func() -> void: revive_declined.emit())
+	rbtn_row.add_child(giveup_btn)
+
 	# ---------------------------------------------------------- 受击闪红
 	_damage_flash = ColorRect.new()
 	_damage_flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -305,6 +369,7 @@ func _pill(bg: Color = Color8(0x0a, 0x10, 0x1e, 160), radius: int = 16) -> Panel
 
 # ================================================================ 对局数据
 func begin_run() -> void:
+	hide_revive()
 	_level_label.text = _world.level_name
 	_sub_label.text = _world.level_subtitle
 	_trait_label.text = "　·　".join(GameConfig.theme_traits(_world.level_theme))
@@ -369,7 +434,37 @@ func _flash_screen(color: Color, strength: float) -> void:
 	tween.tween_property(_damage_flash, "modulate:a", 0.0, 0.45)
 
 
-func _process(_delta: float) -> void:
+## 复活倒计时（C4）：时间到视为放弃
+func show_revive(cost: int) -> void:
+	_revive_left = GameConfig.REVIVE_COUNTDOWN
+	_revive_info.text = "消耗 %d 能量方块，原地满血继续（当前拥有 %d 个）" % [
+		cost, GameState.coins_total]
+	_revive_time.text = "%.0f s" % _revive_left
+	_revive_layer.visible = true
+
+
+func hide_revive() -> void:
+	_revive_left = 0.0
+	_revive_layer.visible = false
+
+
+func is_revive_pending() -> bool:
+	return _revive_layer.visible
+
+
+func _update_revive(delta: float) -> void:
+	if not _revive_layer.visible:
+		return
+	_revive_left -= delta
+	if _revive_left <= 0.0:
+		hide_revive()
+		revive_declined.emit()
+		return
+	_revive_time.text = "%.1f s" % _revive_left
+
+
+func _process(delta: float) -> void:
+	_update_revive(delta)
 	if _world == null:
 		return
 

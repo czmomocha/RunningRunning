@@ -47,6 +47,40 @@ const PIT_GAP := ROW_LENGTH - PIT_LEDGE  # 实际缺口宽度
 ## 坑洞就只是一条黑带，缺少「深渊」的暗示。
 const PIT_DEPTH := 2.6
 
+# ---------------------------------------------------------------- 滑铲 / 横杆（B4）
+## 滑铲：在地面按下「下」进入低姿，碰撞盒压低，可以从横杆下方穿过。
+## 同一个键在空中按下仍是快速下落——按所处状态分流，操作维度从 2 变 3。
+const SLIDE_TIME := 0.62          # 单次滑铲时长
+const SLIDE_BUFFER := 0.16        # 落地前提早按下也能接上滑铲
+const SLIDE_COOLDOWN := 0.16      # 两次滑铲之间的最小间隔
+## 横杆悬在半空：站立时碰撞盒顶端 1.55 m 会撞上，滑铲时压到约 0.93 m 即可通过。
+## 顶端 3.05 m 高于最强跳跃（兔子 1.15 倍 ≈ 2.73 m），所以横杆「只能滑、不能跳」。
+const BAR_BOTTOM := 1.15          # 横杆下沿高度
+const BAR_HEIGHT := 1.90          # 横杆自身厚度
+const BAR_CHANCE := 0.14          # 单个障碍物变成横杆的概率
+const BAR_MIN_DISTANCE := 120.0   # 开局这段距离先只出现常规障碍
+
+# ---------------------------------------------------------------- 动态障碍（B5）
+## 此前所有障碍都是静止方块。加入「左右平移」与「周期开合闸门」两类动态障碍，
+## 让「什么时候通过」也变成一个需要判断的维度，而不只是「走哪条道」。
+const DYNAMIC_MIN_DISTANCE := 220.0  # 先让玩家熟悉基础操作再引入
+const GATE_CHANCE := 0.45            # 高墙变成「周期开合闸门」的概率
+const MOVER_CHANCE := 0.30           # 独行障碍变成「左右平移」的概率
+const MOVER_AMP := 2.1               # 平移幅度（米），约跨越 1.4 个车道
+const MOVER_SPEED_MIN := 0.9         # 平移角速度范围
+const MOVER_SPEED_MAX := 1.7
+const GATE_PERIOD := 2.4             # 闸门开合周期（秒），节奏固定可预判
+const GATE_OPEN_RATIO := 0.45        # 一个周期里「打开」的时间占比
+const GATE_TRANS := 0.18             # 升降过渡占周期的比例
+
+# ---------------------------------------------------------------- 复活 / 续关（C4）
+## 被追上后可以选择耗费积攒的能量方块原地复活，配合 C1 的货币闭环：
+## 「跑一局 → 攒货币 → 关键时刻续命 → 跑得更远」。
+const REVIVE_COST := 300           # 单次复活消耗的能量方块
+const REVIVE_MAX_PER_RUN := 1      # 每局最多复活次数
+const REVIVE_INVINCIBLE := 2.6     # 复活后的无敌时长，避免刚起身又被撞
+const REVIVE_COUNTDOWN := 6.0      # 复活提示的倒计时（秒）
+
 # ---------------------------------------------------------------- 生命 / 受击
 const INVINCIBLE_TIME := 1.6        # 受击后无敌时长
 const INVINCIBLE_BLINK := 12.0      # 无敌闪烁频率
@@ -126,6 +160,7 @@ const COMBO_BONUS_PER_COIN := 2   # 每级连击给方块追加的分数
 const TRICK_JUMP := 25            # 跳过矮栏
 const TRICK_NEAR_MISS := 15       # 与高墙擦身而过
 const TRICK_PIT := 30             # 飞越坑洞
+const TRICK_SLIDE := 20           # 滑铲穿过横杆（B4）
 ## 擦身判定的横向距离窗口（米）：小于下限视为已撞上，大于上限不算险
 const NEAR_MISS_MIN := 1.2
 const NEAR_MISS_MAX := 2.6
@@ -301,7 +336,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x3f, 0x8f, 0x5f), "trunk": Color8(0x8b, 0x5e, 0x3c),
 		"rock": Color8(0x9a, 0xa0, 0xa6),
 		"low": Color8(0xe0, 0xa4, 0x58), "high": Color8(0xc8, 0x55, 0x3d),
-		"block": Color8(0x8d, 0x87, 0x7e),
+		"block": Color8(0x8d, 0x87, 0x7e), "bar": Color8(0xd8, 0x6f, 0xff),
 		"traction": 1.00, "wind": 0.00, "gap": 0.00,
 		"pit_glow": Color.TRANSPARENT, "warn": Color8(0xff, 0xd2, 0x4d),
 	},
@@ -313,7 +348,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x5a, 0x84, 0x36), "trunk": Color8(0x6e, 0x4e, 0x30),
 		"rock": Color8(0x4a, 0x3e, 0x36),
 		"low": Color8(0xa8, 0x42, 0x28), "high": Color8(0x6f, 0x2a, 0x30),
-		"block": Color8(0x3e, 0x2c, 0x24),
+		"block": Color8(0x3e, 0x2c, 0x24), "bar": Color8(0xc9, 0x7b, 0xff),
 		# 热浪与流沙：周期性逆风阵，需要预判节奏
 		"traction": 0.88, "wind": 0.30, "gap": 0.00,
 		"pit_glow": Color.TRANSPARENT, "warn": Color8(0xff, 0xe0, 0x70),
@@ -326,7 +361,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x4f, 0x8a, 0x6a), "trunk": Color8(0x77, 0x62, 0x55),
 		"rock": Color8(0xa8, 0xb4, 0xc0),
 		"low": Color8(0x6f, 0xa8, 0xd8), "high": Color8(0x3f, 0x6f, 0xa8),
-		"block": Color8(0x8a, 0x9a, 0xaa),
+		"block": Color8(0x8a, 0x9a, 0xaa), "bar": Color8(0xa0, 0x7f, 0xff),
 		# 打滑的冰雪赛道：抓地力大幅下降，换道会滑过头
 		"traction": 0.45, "wind": 0.10, "gap": 0.00,
 		"pit_glow": Color.TRANSPARENT, "warn": Color8(0x4f, 0x8f, 0xd8),
@@ -339,7 +374,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x2f, 0x6b, 0x3f), "trunk": Color8(0x6b, 0x4a, 0x33),
 		"rock": Color8(0x7c, 0x86, 0x80),
 		"low": Color8(0xc0, 0x8a, 0x4a), "high": Color8(0x8f, 0x45, 0x30),
-		"block": Color8(0x6f, 0x6a, 0x60),
+		"block": Color8(0x6f, 0x6a, 0x60), "bar": Color8(0xd0, 0x76, 0xff),
 		# 密林中的追逐：开始出现塌陷的沟壑
 		"traction": 0.92, "wind": 0.00, "gap": 0.17,
 		"pit_glow": Color.TRANSPARENT, "warn": Color8(0xff, 0xe0, 0x60),
@@ -352,7 +387,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x7a, 0x3a, 0x2c), "trunk": Color8(0x4a, 0x33, 0x2c),
 		"rock": Color8(0x5a, 0x50, 0x50),
 		"low": Color8(0xff, 0x8c, 0x3a), "high": Color8(0xff, 0x4a, 0x2a),
-		"block": Color8(0x3a, 0x33, 0x33),
+		"block": Color8(0x3a, 0x33, 0x33), "bar": Color8(0xff, 0x66, 0xd4),
 		# 炽热的生死时速：熔岩裂谷 + 上升热气流带来的扰动
 		"traction": 0.86, "wind": 0.18, "gap": 0.32,
 		"pit_glow": Color8(0xff, 0x6a, 0x1e), "warn": Color8(0xff, 0xc8, 0x40),
@@ -365,7 +400,7 @@ const THEMES: Dictionary = {
 		"leaf": Color8(0x3f, 0x6f, 0x8f), "trunk": Color8(0x4a, 0x44, 0x58),
 		"rock": Color8(0x6a, 0x74, 0x8c),
 		"low": Color8(0x8f, 0xd4, 0xff), "high": Color8(0xc0, 0x6f, 0xd4),
-		"block": Color8(0x4a, 0x54, 0x70),
+		"block": Color8(0x4a, 0x54, 0x70), "bar": Color8(0xb0, 0x7c, 0xff),
 		# 最终试炼：冰滑 + 寒风 + 裂隙，三种机制叠加
 		"traction": 0.58, "wind": 0.22, "gap": 0.26,
 		"pit_glow": Color8(0x4a, 0x8f, 0xff), "warn": Color8(0x9f, 0xd8, 0xff),
@@ -464,6 +499,11 @@ static func lane_x(lane: int) -> float:
 ## 限制车道索引在合法范围内
 static func clamp_lane(lane: int) -> int:
 	return clampi(lane, 0, LANE_COUNT - 1)
+
+
+## 世界 X 坐标 -> 最近的车道索引（动态障碍每帧换道时用）
+static func lane_of_x(x: float) -> int:
+	return clamp_lane(int(round(x / LANE_WIDTH + (LANE_COUNT - 1) * 0.5)))
 
 
 static func character(index: int) -> Dictionary:

@@ -113,8 +113,9 @@ func show_career() -> void:
 
 
 func show_result(level_index: int, completed: bool, score: int, coins: int,
-		distance: float, hits: int, trick_score: int = 0, max_combo: int = 0) -> void:
+		distance: float, hits: int, trick_score: int = 0, max_combo: int = 0,
+		revives: int = 0) -> void:
 	hide_all()
 	_result.visible = true
 	_result.show_result(level_index, completed, score, coins, distance, hits,
-		trick_score, max_combo)
+		trick_score, max_combo, revives)

@@ -171,3 +171,5 @@ func _update_selection() -> void:
 	_footer.text = "出战：%s　·　本局生命 %d 点（%s 基础 %d，角色 %+d）　·　通关得分 ×%.1f" % [
 		ch["name"], GameState.final_hp(), d["name"], int(d["hp"]), int(ch["hp"]),
 		float(d["score"])]
+	_footer.text += "\n被追上可消耗 %d 能量方块原地复活（每局 %d 次，当前拥有 %d 个）" % [
+		GameConfig.REVIVE_COST, GameConfig.REVIVE_MAX_PER_RUN, GameState.coins_total]

@@ -143,6 +143,8 @@ func _build_bank() -> void:
 	_bank["shield_up"] = _make_shield_up()
 	_bank["shield_break"] = _make_shield_break()
 	_bank["trick"] = _make_trick()
+	_bank["slide"] = _make_slide()
+	_bank["revive"] = _make_revive()
 
 
 # ---------------------------------------------------------------- 跑动
@@ -383,6 +385,30 @@ func _make_trick() -> AudioStreamWAV:
 	var b := _blank(0.20)
 	_osc(b, 0.00, 0.07, G6, G6, 0.14, Wave.SINE, 5.0)
 	_osc(b, 0.06, 0.12, C7, C7, 0.12, Wave.SINE, 5.5)
+	return _to_stream(b)
+
+
+# ---------------------------------------------------------------- 滑铲 / 复活（B4 / C4）
+## 滑铲：一段贴地掠过的摩擦噪声 + 下滑的低音，短促但有「擦地」的实感
+func _make_slide() -> AudioStreamWAV:
+	var b := _blank(0.42)
+	_noise(b, 0.0, 0.34, 0.26, 3.2, 0.62)
+	_osc(b, 0.0, 0.30, 520.0, 190.0, 0.16, Wave.TRI, 4.2)
+	_osc(b, 0.02, 0.24, 130.0, 78.0, 0.14, Wave.SINE, 5.0)
+	return _to_stream(b)
+
+
+## 复活：由低到高的四音上行 + 一层明亮的泛音，明确传达「回来了」
+func _make_revive() -> AudioStreamWAV:
+	var b := _blank(0.85)
+	var notes := [C5, E5, G5, C6]
+	for i in notes.size():
+		var f: float = notes[i]
+		var start := float(i) * 0.09
+		_osc(b, start, 0.26, f, f, 0.17, Wave.TRI, 2.8)
+		_osc(b, start, 0.26, f * 2.0, f * 2.0, 0.05, Wave.SINE, 3.6)
+	_osc(b, 0.36, 0.44, E6, E6, 0.10, Wave.SINE, 2.4)
+	_noise(b, 0.0, 0.18, 0.10, 6.0, 0.5)
 	return _to_stream(b)
 
 
