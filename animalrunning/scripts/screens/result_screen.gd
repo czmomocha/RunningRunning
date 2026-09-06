@@ -31,8 +31,8 @@ func _build() -> void:
 	card.set_anchors_preset(Control.PRESET_CENTER)
 	card.offset_left = -290.0
 	card.offset_right = 290.0
-	card.offset_top = -228.0
-	card.offset_bottom = 228.0
+	card.offset_top = -252.0
+	card.offset_bottom = 252.0
 	add_child(card)
 
 	var box := VBoxContainer.new()
@@ -113,7 +113,7 @@ func _stat_row(name_text: String, value_text: String, color: Color, big := false
 
 ## 展示结算数据
 func show_result(level_index: int, completed: bool, score: int, coins: int,
-		distance: float) -> void:
+		distance: float, hits: int) -> void:
 	var lv := GameConfig.level(level_index)
 	var diff := GameConfig.difficulty(GameState.difficulty_index)
 	var diff_id := String(diff["id"])
@@ -127,11 +127,17 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 		level_index + 1, lv["name"], diff["name"],
 		GameConfig.character(GameState.character_index)["name"]]
 
+	# 生涯结算：货币沉淀 + 统计累加 + 成就判定（必须在读取 coins_total 之前调用）
+	var new_achievements := GameState.record_run(
+		completed, coins, distance, hits, level_index, diff_id)
+
 	for c in _rows.get_children():
 		c.queue_free()
 	_rows.add_child(_stat_row("跑出距离",
 		"%d / %d m" % [int(distance), int(lv["distance"])], GameConfig.COLOR_TEXT))
 	_rows.add_child(_stat_row("能量方块", "%d 个" % coins, GameConfig.COLOR_ACCENT))
+	_rows.add_child(_stat_row("货币沉淀",
+		"+%d（累计 %d）" % [coins, GameState.coins_total], GameConfig.COLOR_ACCENT))
 	_rows.add_child(_stat_row("基础得分", str(score), GameConfig.COLOR_TEXT))
 	_rows.add_child(_stat_row("难度加成", "×%.1f" % float(diff["score"]), GameConfig.COLOR_INFO))
 
@@ -162,8 +168,13 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 	elif completed:
 		notes += "\n全部关卡通关，恭喜！"
 
-	# 解锁比破纪录更值得庆祝，两者同时发生时只播解锁音
-	if unlocked_new:
+	# 新达成的成就（比关卡解锁更值得庆祝）
+	notes += _achievement_notes(new_achievements)
+
+	# 音效优先级：成就 > 关卡解锁 > 破纪录
+	if not new_achievements.is_empty():
+		_play_stinger("unlock")
+	elif unlocked_new:
 		_play_stinger("unlock")
 	elif new_record:
 		_play_stinger("record")
@@ -175,6 +186,19 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 	var has_next := completed and level_index + 1 < GameConfig.LEVELS.size()
 	_next_btn.visible = has_next
 	_next_btn.disabled = not has_next
+
+
+## 把新达成的成就拼成提示文字
+func _achievement_notes(ids: Array[String]) -> String:
+	if ids.is_empty():
+		return ""
+	var names := []
+	for id in ids:
+		for a in GameConfig.ACHIEVEMENTS:
+			if String(a["id"]) == id:
+				names.append("%s（%s）" % [a["name"], a["desc"]])
+				break
+	return "\n达成成就：%s！" % "、".join(names)
 
 
 ## 稍稍延迟，避免和通关 / 淘汰音叠在一起变成一团

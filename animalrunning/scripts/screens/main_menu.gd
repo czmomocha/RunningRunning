@@ -5,6 +5,7 @@ extends Control
 signal start_pressed
 signal characters_pressed
 signal levels_pressed
+signal career_pressed
 
 var _summary: Label
 var _preview_slot: Control
@@ -79,14 +80,19 @@ func _build() -> void:
 	left.add_child(btn_row)
 
 	var char_btn := UiTheme.button("选择角色", GameConfig.COLOR_INFO,
-		Vector2(163.0, 52.0), 20, true)
+		Vector2(106.0, 52.0), 18, true)
 	char_btn.pressed.connect(func() -> void: characters_pressed.emit())
 	btn_row.add_child(char_btn)
 
 	var level_btn := UiTheme.button("关卡地图", GameConfig.COLOR_GOOD,
-		Vector2(163.0, 52.0), 20, true)
+		Vector2(106.0, 52.0), 18, true)
 	level_btn.pressed.connect(func() -> void: levels_pressed.emit())
 	btn_row.add_child(level_btn)
+
+	var career_btn := UiTheme.button("生涯 / 成就", Color8(0xb8, 0xa4, 0xff),
+		Vector2(106.0, 52.0), 18, true)
+	career_btn.pressed.connect(func() -> void: career_pressed.emit())
+	btn_row.add_child(career_btn)
 
 	# ---------------------------------------------------------- 右：当前角色
 	var card := UiTheme.panel(GameConfig.COLOR_PANEL, 24, GameConfig.COLOR_LINE, 2, 10)
@@ -148,10 +154,11 @@ func refresh() -> void:
 	var ch := GameConfig.character(GameState.character_index)
 	var diff := GameConfig.difficulty(GameState.difficulty_index)
 	var lv := GameConfig.level(GameState.current_level)
-	_summary.text = "难度：%s　·　生命 %d 点\n关卡：第 %d 关 %s　·　已解锁 %d / %d" % [
-		diff["name"], GameState.final_hp(),
+	_summary.text = "难度：%s　·　生命 %d 点　·　能量方块 %d\n关卡：第 %d 关 %s　·　已解锁 %d / %d　·　成就 %d / %d" % [
+		diff["name"], GameState.final_hp(), GameState.coins_total,
 		GameState.current_level + 1, lv["name"],
-		GameState.unlocked_levels, GameConfig.LEVELS.size()]
+		GameState.unlocked_levels, GameConfig.LEVELS.size(),
+		GameState.achievement_count(), GameConfig.ACHIEVEMENTS.size()]
 
 	if _shown_index != GameState.character_index:
 		_shown_index = GameState.character_index

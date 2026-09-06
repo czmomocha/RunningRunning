@@ -14,6 +14,7 @@ var _character: CharacterSelect
 var _levels: LevelMap
 var _difficulty: DifficultySelect
 var _result: ResultScreen
+var _career: CareerScreen
 
 
 func _ready() -> void:
@@ -37,6 +38,10 @@ func _ready() -> void:
 	_result.name = "ResultScreen"
 	add_child(_result)
 
+	_career = CareerScreen.new()
+	_career.name = "CareerScreen"
+	add_child(_career)
+
 	_connect()
 	hide_all()
 
@@ -45,9 +50,12 @@ func _connect() -> void:
 	_menu.start_pressed.connect(show_character)
 	_menu.characters_pressed.connect(show_character)
 	_menu.levels_pressed.connect(show_level_map)
+	_menu.career_pressed.connect(show_career)
 
 	_character.back_pressed.connect(show_menu)
 	_character.next_pressed.connect(show_level_map)
+
+	_career.back_pressed.connect(show_menu)
 
 	_levels.back_pressed.connect(show_menu)
 	_levels.level_selected.connect(_on_level_selected)
@@ -98,8 +106,14 @@ func show_difficulty() -> void:
 	_difficulty.refresh()
 
 
+func show_career() -> void:
+	hide_all()
+	_career.visible = true
+	_career.refresh()
+
+
 func show_result(level_index: int, completed: bool, score: int, coins: int,
-		distance: float) -> void:
+		distance: float, hits: int) -> void:
 	hide_all()
 	_result.visible = true
-	_result.show_result(level_index, completed, score, coins, distance)
+	_result.show_result(level_index, completed, score, coins, distance, hits)

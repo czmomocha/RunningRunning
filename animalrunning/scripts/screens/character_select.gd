@@ -1,6 +1,7 @@
 class_name CharacterSelect
 extends Control
-## 角色选择：以 3D 预览卡片展示所有方块动物，点击即可切换当前角色。
+## 角色选择：以 3D 预览卡片展示所有方块动物。
+## 熊猫初始解锁，其余角色需要用累计的能量方块（货币）解锁——这就是「商店」。
 
 signal back_pressed
 signal next_pressed
@@ -11,12 +12,14 @@ const PREVIEW_SIZE := 104.0
 var _cards: Array[Button] = []
 var _models: Array[Node3D] = []
 var _halo: Array[Panel] = []
+var _veils: Array[Control] = []
 var _info: Label
 var _time: float = 0.0
 
 
 func _ready() -> void:
 	_build()
+	_refresh_locks()
 	_update_selection()
 
 
@@ -132,6 +135,40 @@ func _make_card(index: int) -> Button:
 	stats.add_child(UiTheme.stat_bar("换道", _ratio(float(ch["lane"])),
 		"%d%%" % int(float(ch["lane"]) * 100.0), GameConfig.COLOR_GOOD))
 
+	# ---------------------------------------------------------- 锁定遮罩（商店）
+	var cost := int(ch.get("cost", 0))
+	if cost > 0:
+		var veil := Control.new()
+		veil.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		veil.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(veil)
+
+		var dim := ColorRect.new()
+		dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		dim.color = Color8(0x08, 0x0c, 0x16, 168)
+		dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		veil.add_child(dim)
+
+		var lock_box := VBoxContainer.new()
+		lock_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		lock_box.alignment = BoxContainer.ALIGNMENT_CENTER
+		lock_box.add_theme_constant_override("separation", 6)
+		lock_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		veil.add_child(lock_box)
+
+		var lock_label := UiTheme.label("未解锁", 24, GameConfig.COLOR_DIM,
+			HORIZONTAL_ALIGNMENT_CENTER)
+		lock_box.add_child(lock_label)
+		var price_chip := UiTheme.chip("解锁：%d 能量方块" % cost, GameConfig.COLOR_ACCENT, 15)
+		price_chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		lock_box.add_child(price_chip)
+		lock_box.add_child(UiTheme.label("点击购买", 13, GameConfig.COLOR_MUTED,
+			HORIZONTAL_ALIGNMENT_CENTER))
+
+		_veils.append(veil)
+	else:
+		_veils.append(null)
+
 	_cards.append(card)
 	return card
 
@@ -142,9 +179,37 @@ func _ratio(value: float) -> float:
 
 
 func _select(index: int) -> void:
+	# 未解锁的角色：点击即尝试购买（这就是商店入口）
+	if not GameState.is_character_unlocked(index):
+		_try_buy(index)
+		return
 	GameState.character_index = index
 	GameState.save()
 	_update_selection()
+
+
+## 用货币解锁角色；买得起就买并直接出战，买不起则提示还差多少
+func _try_buy(index: int) -> void:
+	var ch := GameConfig.character(index)
+	var cost := GameState.character_cost(index)
+	if GameState.try_unlock_character(index):
+		GameState.character_index = index
+		GameState.save()
+		Sfx.play("unlock")
+		_refresh_locks()
+		_update_selection()
+	else:
+		Sfx.play("ui_back")
+		_info.text = "能量方块不足：解锁%s还差 %d 个（当前持有 %d）" % [
+			String(ch["name"]), cost - GameState.coins_total, GameState.coins_total]
+		_info.add_theme_color_override("font_color", GameConfig.COLOR_BAD)
+
+
+## 刷新所有卡片的锁定遮罩（购买成功后调用）
+func _refresh_locks() -> void:
+	for i in _veils.size():
+		if _veils[i] != null:
+			_veils[i].visible = not GameState.is_character_unlocked(i)
 
 
 func _update_selection() -> void:
@@ -161,8 +226,9 @@ func _update_selection() -> void:
 
 	var ch := GameConfig.character(GameState.character_index)
 	var diff := GameConfig.difficulty(GameState.difficulty_index)
-	_info.text = "已选择 %s　·　本局生命 %d 点（%s 基础 %d，角色 %+d）" % [
-		ch["name"], GameState.final_hp(), diff["name"],
+	_info.add_theme_color_override("font_color", GameConfig.COLOR_DIM)
+	_info.text = "能量方块：%d　·　已选择 %s　·　本局生命 %d 点（%s 基础 %d，角色 %+d）" % [
+		GameState.coins_total, ch["name"], GameState.final_hp(), diff["name"],
 		int(diff["hp"]), int(ch["hp"])]
 
 

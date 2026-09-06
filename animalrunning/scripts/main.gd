@@ -8,6 +8,8 @@ enum State { MENU, PLAYING, RESULT }
 @onready var ui: UIManager = $UI
 
 var _state: State = State.MENU
+## 本局受到的伤害次数（成就「无伤通关」判定用）
+var _hits_taken: int = 0
 
 
 func _ready() -> void:
@@ -25,6 +27,7 @@ func _ready() -> void:
 
 	world.player.hp_changed.connect(hud.set_hp)
 	world.player.hit_taken.connect(hud.flash_damage)
+	world.player.hit_taken.connect(func() -> void: _hits_taken += 1)
 	world.player_died.connect(_on_player_died)
 	world.level_completed.connect(_on_level_completed)
 	hud.pause_requested.connect(_toggle_pause)
@@ -59,6 +62,7 @@ func _start_game() -> void:
 	get_tree().paused = false
 	hud.set_paused(false)
 	_state = State.PLAYING
+	_hits_taken = 0
 	ui.hide_all()
 
 	world.visible = true
@@ -88,7 +92,7 @@ func _next_level() -> void:
 func _finish(completed: bool, score: int, coins: int, distance: float) -> void:
 	_state = State.RESULT
 	hud.visible = false
-	ui.show_result(GameState.current_level, completed, score, coins, distance)
+	ui.show_result(GameState.current_level, completed, score, coins, distance, _hits_taken)
 
 
 func _on_player_died(score: int, coins: int, distance: float) -> void:

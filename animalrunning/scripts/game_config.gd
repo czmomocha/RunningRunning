@@ -127,43 +127,44 @@ const LAYER_HAZARD := 16
 const LAYER_OBSTACLE := 32      # 障碍物实体（无敌期间可穿过）
 
 # ---------------------------------------------------------------- 角色
-## speed / jump / lane 为倍率，hp 为生命值加成；color 为该角色在界面上的主题色
+## speed / jump / lane 为倍率，hp 为生命值加成；color 为该角色在界面上的主题色；
+## cost 为解锁所需的能量方块（0 表示初始即解锁）
 const CHARACTERS: Array[Dictionary] = [
 	{
 		"id": "panda", "name": "熊猫", "file": "animal-panda.glb",
 		"desc": "全能选手，没有明显短板", "tag": "均衡",
 		"color": Color8(0x8f, 0xc7, 0xf0),
-		"speed": 1.00, "jump": 1.00, "lane": 1.00, "hp": 0,
+		"speed": 1.00, "jump": 1.00, "lane": 1.00, "hp": 0, "cost": 0,
 	},
 	{
 		"id": "tiger", "name": "老虎", "file": "animal-tiger.glb",
 		"desc": "速度 +12%，但生命 -1", "tag": "极速",
 		"color": Color8(0xff, 0x9d, 0x4d),
-		"speed": 1.12, "jump": 1.00, "lane": 1.00, "hp": -1,
+		"speed": 1.12, "jump": 1.00, "lane": 1.00, "hp": -1, "cost": 600,
 	},
 	{
 		"id": "bunny", "name": "兔子", "file": "animal-bunny.glb",
 		"desc": "跳跃 +15%，换道 +15%", "tag": "灵巧",
 		"color": Color8(0xff, 0xa8, 0xc8),
-		"speed": 1.00, "jump": 1.15, "lane": 1.15, "hp": 0,
+		"speed": 1.00, "jump": 1.15, "lane": 1.15, "hp": 0, "cost": 400,
 	},
 	{
 		"id": "fox", "name": "狐狸", "file": "animal-fox.glb",
 		"desc": "换道 +30%，跳跃略弱", "tag": "机动",
 		"color": Color8(0xff, 0xc2, 0x6b),
-		"speed": 1.05, "jump": 0.92, "lane": 1.30, "hp": 0,
+		"speed": 1.05, "jump": 0.92, "lane": 1.30, "hp": 0, "cost": 800,
 	},
 	{
 		"id": "penguin", "name": "企鹅", "file": "animal-penguin.glb",
 		"desc": "生命 +1，速度 -5%", "tag": "稳健",
 		"color": Color8(0x7f, 0xe3, 0xe0),
-		"speed": 0.95, "jump": 1.00, "lane": 1.00, "hp": 1,
+		"speed": 0.95, "jump": 1.00, "lane": 1.00, "hp": 1, "cost": 1000,
 	},
 	{
 		"id": "elephant", "name": "大象", "file": "animal-elephant.glb",
 		"desc": "生命 +2，但速度 -10%", "tag": "坦克",
 		"color": Color8(0xa8, 0xb4, 0xe8),
-		"speed": 0.90, "jump": 0.95, "lane": 0.90, "hp": 2,
+		"speed": 0.90, "jump": 0.95, "lane": 0.90, "hp": 2, "cost": 1200,
 	},
 ]
 
@@ -329,6 +330,46 @@ static func theme_traits(theme_name: String) -> Array[String]:
 	if out.is_empty():
 		out.append("路况良好")
 	return out
+
+# ---------------------------------------------------------------- 成就
+## id     唯一标识（存档键）
+## name   成就名
+## desc   达成条件说明
+## goal   目标值（进度达到即解锁，进度取值见 GameState.achievement_progress）
+## unit   进度数值的单位（用于生涯界面显示）
+const ACHIEVEMENTS: Array[Dictionary] = [
+	{"id": "first_run", "name": "初次逃亡", "desc": "完成第一局",
+		"goal": 1, "unit": "局"},
+	{"id": "runs_10", "name": "常客", "desc": "累计完成 10 局",
+		"goal": 10, "unit": "局"},
+	{"id": "runs_30", "name": "逃亡惯犯", "desc": "累计完成 30 局",
+		"goal": 30, "unit": "局"},
+	{"id": "dist_10km", "name": "十里奔袭", "desc": "累计跑动 10 km",
+		"goal": 10000, "unit": "m"},
+	{"id": "dist_50km", "name": "马拉松方阵", "desc": "累计跑动 50 km",
+		"goal": 50000, "unit": "m"},
+	{"id": "coins_500", "name": "收集狂", "desc": "累计收集 500 个能量方块",
+		"goal": 500, "unit": "个"},
+	{"id": "coins_2000", "name": "方块大亨", "desc": "累计收集 2000 个能量方块",
+		"goal": 2000, "unit": "个"},
+	{"id": "single_1000", "name": "千里之行", "desc": "单局跑出 1000 m",
+		"goal": 1000, "unit": "m"},
+	{"id": "single_2000", "name": "一骑绝尘", "desc": "单局跑出 2000 m",
+		"goal": 2000, "unit": "m"},
+	{"id": "hitless", "name": "毫发无损", "desc": "单局不受任何伤害并通关",
+		"goal": 1, "unit": "次"},
+	{"id": "insane_clear", "name": "噩梦终结者", "desc": "以噩梦难度通关任意关卡",
+		"goal": 1, "unit": "次"},
+	{"id": "all_levels", "name": "通关大满贯", "desc": "通关全部 6 个关卡",
+		"goal": 6, "unit": "关"},
+	{"id": "all_chars", "name": "动物庄园", "desc": "解锁全部 6 个角色",
+		"goal": 6, "unit": "个"},
+]
+
+
+static func achievement(index: int) -> Dictionary:
+	return ACHIEVEMENTS[clampi(index, 0, ACHIEVEMENTS.size() - 1)]
+
 
 # ---------------------------------------------------------------- 通用配色（UI）
 ## 原则：正文与深色底的对比度足够高；辅助文字不再使用灰蓝色 + 粗描边，避免糊成一团。
