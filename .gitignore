@@ -1,0 +1,25 @@
+# ===== Godot =====
+# 编辑器生成的缓存目录（打开项目时自动重建）
+.godot/
+# 临时文件
+*.tmp
+
+# ===== macOS =====
+.DS_Store
+
+# ===== 导出构建产物 =====
+/builds/
+export_credentials.cfg
+*.exe
+*.apk
+*.zip
+
+# ===== Kenney 原始素材包 =====
+# 项目内 models/ 已包含所需的 .glb，原始包含重复的 fbx/obj/mtl 格式
+# 如需保留许可备查，可单独保留其中 License.txt
+kenney_cube-pets_1.0/
+
+# ===== IDE / 其他 =====
+*.bak
+.vscode/
+.idea/
