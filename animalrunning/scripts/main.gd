@@ -42,6 +42,9 @@ func _ready() -> void:
 	hud.restart_requested.connect(_restart_run)
 	hud.revive_requested.connect(_do_revive)
 	hud.revive_declined.connect(_decline_revive)
+	# 视角切换（D8）：HUD 按钮 / V 键共用同一条链路，按钮文案随状态同步
+	hud.view_toggle_requested.connect(_toggle_view)
+	world.view_mode_changed.connect(hud.set_view_mode)
 
 	ui.start_requested.connect(_start_game)
 	ui.result_replay.connect(_start_game)
@@ -173,9 +176,21 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 		return
 
+	# 对局中 V 键切换第一 / 第三人称（D8）
+	if code == KEY_V and _state == State.PLAYING and not get_tree().paused:
+		_toggle_view()
+		get_viewport().set_input_as_handled()
+
 	if code == KEY_ESCAPE:
 		_toggle_pause()
 		get_viewport().set_input_as_handled()
+
+
+## 切换第一 / 第三人称（D8）
+func _toggle_view() -> void:
+	if _state != State.PLAYING:
+		return
+	world.set_view_mode(not world.first_person)
 
 
 func _toggle_pause() -> void:

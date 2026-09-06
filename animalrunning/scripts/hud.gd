@@ -8,6 +8,8 @@ extends CanvasLayer
 signal pause_requested
 signal quit_requested
 signal restart_requested
+## 视角切换（D8）：按下后请求世界切换第一 / 第三人称
+signal view_toggle_requested
 ## 复活（C4）：玩家选择续关 / 放弃继续
 signal revive_requested
 signal revive_declined
@@ -29,6 +31,7 @@ var _speed_label: Label
 var _pause_layer: Control
 var _pause_dim: ColorRect
 var _sound_btn: Button
+var _view_btn: Button
 var _hp_row: HBoxContainer
 var _hp_cells: Array[Panel] = []
 var _minimap: MiniMap
@@ -194,6 +197,13 @@ func _build_ui() -> void:
 	_speed_label = _label("0 km/h", 18, GameConfig.COLOR_INFO)
 	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	right.add_child(_speed_label)
+
+	# 视角切换（D8）：按钮文字提示「按下后会切到哪个视角」，键盘 V 同效
+	_view_btn = UiTheme.button("第一人称", GameConfig.COLOR_INFO, Vector2(118.0, 52.0), 16)
+	_view_btn.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	_view_btn.tooltip_text = "切换第一 / 第三人称 (V)"
+	_view_btn.pressed.connect(func() -> void: view_toggle_requested.emit())
+	top.add_child(_view_btn)
 
 	# 暂停按钮
 	var pause_btn := UiTheme.button("❚❚", GameConfig.COLOR_ACCENT, Vector2(52.0, 52.0), 18)
@@ -407,6 +417,12 @@ func set_paused(paused: bool) -> void:
 	_pause_layer.visible = paused
 	if paused:
 		_update_sound_btn()
+
+
+## 同步视角按钮文案（D8）：显示「按下后将切换到」的目标视角
+func set_view_mode(first_person: bool) -> void:
+	if _view_btn != null:
+		_view_btn.text = "第三人称" if first_person else "第一人称"
 
 
 func _update_sound_btn() -> void:

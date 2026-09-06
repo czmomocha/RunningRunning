@@ -13,6 +13,8 @@ signal player_died(score: int, coins: int, distance: float)
 signal level_completed(score: int, coins: int, distance: float)
 ## 无限模式：主题段切换时通知 HUD 更新关卡名与路况
 signal stage_changed
+## 视角切换（D8）：参数为是否处于第一人称
+signal view_mode_changed(first_person: bool)
 
 const CAM_LOOK_AHEAD := 8.0
 const CAM_FOLLOW_X := 0.45
@@ -52,6 +54,8 @@ var wind_factor: float = 1.0
 ## 是否无限模式 / 每日挑战（B1）
 var infinite: bool = false
 var daily: bool = false
+## 是否处于第一人称视角（D8）。相机位置在两种模式间平滑过渡
+var first_person: bool = false
 ## 当前激活的道具及其剩余时间（B2）：id -> 秒
 var powerup_timers: Dictionary = {}
 
@@ -92,6 +96,8 @@ var _track_width: float = 0.0
 var _combo_timer: float = 0.0
 var _air_z_start: float = NAN
 var _infinite_stage: int = -1
+# D8：第一人称融合系数（0 = 纯第三人称，1 = 纯第一人称）
+var _fp_blend: float = 0.0
 
 
 func _ready() -> void:
@@ -381,6 +387,8 @@ func reset_run() -> void:
 	_front_z = last
 
 	player.reset()
+	# 若上一局停留在第一人称，重新开局保持该视角偏好并同步模型显隐（D8）
+	player.set_model_visible(not first_person)
 	_update_camera(0.0, true)
 
 
@@ -389,6 +397,8 @@ func _on_player_died() -> void:
 		return
 	running = false
 	player.running = false
+	# 第一人称下自动切回第三人称，让玩家看到倒地与追兵围上来的画面（D8）
+	set_view_mode(false)
 	emit_signal("player_died", score, coins, distance)
 
 
@@ -411,7 +421,19 @@ func revive() -> void:
 	_enemy_timer = GameConfig.ENEMY_SPAWN_MAX
 
 	player.revive(z)
+	player.set_model_visible(not first_person)
 	running = true
+
+
+## 切换第三 / 第一人称（D8）。
+## 死亡时由 _on_player_died 自动切回第三人称，方便观看倒地动画与追兵围上来。
+func set_view_mode(first: bool) -> void:
+	if first_person == first:
+		return
+	first_person = first
+	player.set_model_visible(not first)
+	Sfx.play("ui_click", 1.1)
+	emit_signal("view_mode_changed", first)
 
 
 func _finish_level() -> void:
@@ -510,21 +532,41 @@ func _update_audio(delta: float) -> void:
 func _process(delta: float) -> void:
 	_animate_pickups(delta)
 	_update_camera(delta, false)
-	# 冲刺时拉高 FOV 强化速度感，结束后平滑收回（B2）
-	var target_fov: float = GameConfig.SPRINT_FOV if powerup_timers.has("sprint") else 50.0
+	# FOV：第三人称 50，第一人称更宽；冲刺时在此基础上再拉高一档强化速度感（B2/D8）
+	var target_fov := lerpf(50.0, GameConfig.FP_FOV, smoothstep(0.0, 1.0, _fp_blend))
+	if powerup_timers.has("sprint"):
+		target_fov += lerpf(GameConfig.SPRINT_FOV - 50.0, 8.0, _fp_blend)
 	_camera.fov = lerpf(_camera.fov, target_fov, 1.0 - exp(-6.0 * delta))
 
 
 func _update_camera(delta: float, instant: bool) -> void:
 	var p := player.position
-	_cam_target = Vector3(p.x * CAM_FOLLOW_X, GameConfig.CAM_HEIGHT, p.z + GameConfig.CAM_BACK)
+
+	# 视角融合系数：切换时在两种机位之间平滑过渡，而不是瞬切（D8）
+	var blend_target := 1.0 if first_person else 0.0
+	if instant:
+		_fp_blend = blend_target
+	else:
+		_fp_blend = move_toward(_fp_blend, blend_target, delta * 2.6)
+	var k := smoothstep(0.0, 1.0, _fp_blend)
+
+	# 第三人称：高位追尾视角
+	var tp_pos := Vector3(p.x * CAM_FOLLOW_X, GameConfig.CAM_HEIGHT, p.z + GameConfig.CAM_BACK)
+	var tp_look := Vector3(p.x * 0.3, 0.9, p.z - CAM_LOOK_AHEAD)
+	# 第一人称：贴在动物头部，随跑动节奏轻微起伏
+	var eye := p.y + GameConfig.FP_EYE_HEIGHT \
+		+ absf(sin(player.bob_phase())) * GameConfig.FP_BOB
+	var fp_pos := Vector3(p.x, eye, p.z + GameConfig.FP_CAM_OFFSET_Z)
+	var fp_look := Vector3(p.x, eye - 0.25, p.z - GameConfig.FP_LOOK_AHEAD)
+
+	_cam_target = tp_pos.lerp(fp_pos, k)
+	var look := tp_look.lerp(fp_look, k)
 
 	if instant:
 		_camera.position = _cam_target
 	else:
 		_camera.position = _camera.position.lerp(_cam_target, 1.0 - exp(-8.0 * delta))
-
-	_camera.look_at(Vector3(p.x * 0.3, 0.9, p.z - CAM_LOOK_AHEAD), Vector3.UP)
+	_camera.look_at(look, Vector3.UP)
 
 
 ## 供 HUD 小地图使用：所有敌人在赛道上的进度（0~1）
@@ -874,9 +916,39 @@ func _create_obstacle() -> Node3D:
 		post.visible = false
 		root.add_child(post)
 
+	# 顶部亮色包边（D8）：俯视视角下障碍只剩顶面可见，用顶面语义色区分高度类型——
+	# 绿 = 矮栏可跳、红 = 高墙必须换道、金 = 中高方块减速绕行；横杆自带发光不用包边。
+	var cap := MeshInstance3D.new()
+	cap.name = "Cap"
+	cap.mesh = BoxMesh.new()
+	var cmat := StandardMaterial3D.new()
+	cmat.roughness = 0.5
+	cmat.metallic = 0.0
+	cmat.emission_enabled = true
+	cmat.emission_energy = 0.65
+	cap.material_override = cmat
+	cap.visible = false
+	root.add_child(cap)
+
+	# 矮栏专属的向上箭头（D8）：绿色发光三棱柱，明确「这条道可以跳过去」
+	var arrow := MeshInstance3D.new()
+	arrow.name = "Arrow"
+	var prism := PrismMesh.new()
+	prism.size = Vector3(0.85, 0.5, 0.4)
+	arrow.mesh = prism
+	var amat := StandardMaterial3D.new()
+	amat.roughness = 0.4
+	amat.emission_enabled = true
+	amat.emission_energy = 0.9
+	arrow.material_override = amat
+	arrow.visible = false
+	root.add_child(arrow)
+
 	root.set_meta("mesh", mesh)
 	root.set_meta("col", col)
 	root.set_meta("hcol", hcol)
+	root.set_meta("cap", cap)
+	root.set_meta("arrow", arrow)
 	return root
 
 
@@ -916,6 +988,35 @@ func _setup_obstacle(root: Node3D, size: Vector3, color: Color, pos: Vector3,
 			(1.0 if name == "PostR" else -1.0) * (size.x * 0.5 - 0.08),
 			-(size.y * 0.5 + post_h * 0.5), 0.0)
 		(p.material_override as StandardMaterial3D).albedo_color = color.darkened(0.45)
+
+	# 顶部语义色包边 + 矮栏箭头（D8）：高度类型在俯视视角下一眼可辨
+	var cap := root.get_meta("cap") as MeshInstance3D
+	var arrow := root.get_meta("arrow") as MeshInstance3D
+	if bar:
+		# 横杆本体已发光（紫），不再叠加包边与箭头
+		cap.visible = false
+		arrow.visible = false
+	else:
+		var cap_color: Color
+		if size.y <= 1.0:
+			cap_color = GameConfig.COLOR_GOOD      # 矮栏：绿 = 可以跳
+		elif size.y >= 2.0:
+			cap_color = GameConfig.COLOR_BAD       # 高墙：红 = 必须换道
+		else:
+			cap_color = GameConfig.COLOR_ACCENT    # 大方块：金 = 减速绕行
+		(cap.mesh as BoxMesh).size = Vector3(size.x + 0.14, 0.16, size.z + 0.14)
+		cap.position = Vector3(0.0, size.y * 0.5 + 0.02, 0.0)
+		var cmat := cap.material_override as StandardMaterial3D
+		cmat.albedo_color = cap_color
+		cmat.emission = cap_color
+		cap.visible = true
+		arrow.visible = size.y <= 1.0
+		if arrow.visible:
+			# 箭头坐在顶面包边之上，沿赛道指向前进方向
+			arrow.position = Vector3(0.0, size.y * 0.5 + 0.36, 0.0)
+			var amat := arrow.material_override as StandardMaterial3D
+			amat.albedo_color = GameConfig.COLOR_GOOD
+			amat.emission = GameConfig.COLOR_GOOD
 
 
 func _on_hazard_body_entered(body: Node3D) -> void:

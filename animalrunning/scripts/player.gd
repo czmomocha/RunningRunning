@@ -56,6 +56,8 @@ var _lane_mul: float = 1.0
 var _model_pivot: Node3D
 var _model: Node3D
 var _shield_shell: MeshInstance3D
+## 第一人称模式下隐藏模型与护盾壳（相机就在头里，留着只会穿模）
+var _model_hidden: bool = false
 var _legs: Array[Node3D] = []
 var _leg_rest_rot: Array[Vector3] = []
 ## 碰撞胶囊与它的形状：滑铲时要压低高度才能穿过横杆
@@ -207,6 +209,9 @@ func reset() -> void:
 	_model_pivot.scale = Vector3.ONE
 	if _model != null:
 		_model.visible = true
+	if _model_pivot != null:
+		_model_pivot.visible = true
+	_model_hidden = false
 	if _shield_shell != null:
 		_shield_shell.visible = false
 
@@ -348,11 +353,25 @@ func take_hit() -> bool:
 	return true
 
 
-## 护盾开关（B2）：true 时显示能量壳
+## 护盾开关（B2）：true 时显示能量壳（第一人称隐藏模型时同步隐藏）
 func set_shield(value: bool) -> void:
 	shielded = value
 	if _shield_shell != null:
-		_shield_shell.visible = value
+		_shield_shell.visible = value and not _model_hidden
+
+
+## 第一人称（D8）：切换模型 / 护盾壳的整体显隐
+func set_model_visible(value: bool) -> void:
+	_model_hidden = not value
+	if _model_pivot != null:
+		_model_pivot.visible = value
+	if _shield_shell != null:
+		_shield_shell.visible = value and shielded
+
+
+## 跑动颠簸的相位：第一人称相机用它做轻微的头部起伏
+func bob_phase() -> float:
+	return _bob_time
 
 
 ## 冲刺穿透开关（B2）：期间可穿过障碍且免疫伤害
