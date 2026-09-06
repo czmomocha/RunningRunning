@@ -113,19 +113,27 @@ func _stat_row(name_text: String, value_text: String, color: Color, big := false
 
 ## 展示结算数据
 func show_result(level_index: int, completed: bool, score: int, coins: int,
-		distance: float, hits: int) -> void:
+		distance: float, hits: int, trick_score: int = 0, max_combo: int = 0) -> void:
 	var lv := GameConfig.level(level_index)
 	var diff := GameConfig.difficulty(GameState.difficulty_index)
 	var diff_id := String(diff["id"])
 	var final_score := GameState.final_score(score)
 	var main_color: Color = GameConfig.COLOR_GOOD if completed else GameConfig.COLOR_BAD
+	var is_infinite: bool = GameConfig.is_infinite(level_index)
+	var is_daily: bool = level_index == GameConfig.DAILY_LEVEL
 
-	_title.text = "关卡完成！" if completed else "被追上了"
+	_title.text = ("无尽征途结束" if is_infinite
+		else ("关卡完成！" if completed else "被追上了"))
 	_title.add_theme_color_override("font_color", main_color)
 	(_banner.get_theme_stylebox("panel") as StyleBoxFlat).bg_color = main_color
-	_subtitle.text = "第 %d 关 · %s　|　%s　|　%s" % [
-		level_index + 1, lv["name"], diff["name"],
-		GameConfig.character(GameState.character_index)["name"]]
+	if is_infinite:
+		_subtitle.text = "%s　|　%s　|　%s" % [
+			"每日挑战" if is_daily else "无限模式", diff["name"],
+			GameConfig.character(GameState.character_index)["name"]]
+	else:
+		_subtitle.text = "第 %d 关 · %s　|　%s　|　%s" % [
+			level_index + 1, lv["name"], diff["name"],
+			GameConfig.character(GameState.character_index)["name"]]
 
 	# 生涯结算：货币沉淀 + 统计累加 + 成就判定（必须在读取 coins_total 之前调用）
 	var new_achievements := GameState.record_run(
@@ -133,11 +141,16 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 
 	for c in _rows.get_children():
 		c.queue_free()
-	_rows.add_child(_stat_row("跑出距离",
-		"%d / %d m" % [int(distance), int(lv["distance"])], GameConfig.COLOR_TEXT))
+	if is_infinite:
+		_rows.add_child(_stat_row("跑出距离", "%d m" % int(distance), GameConfig.COLOR_TEXT))
+	else:
+		_rows.add_child(_stat_row("跑出距离",
+			"%d / %d m" % [int(distance), int(lv["distance"])], GameConfig.COLOR_TEXT))
 	_rows.add_child(_stat_row("能量方块", "%d 个" % coins, GameConfig.COLOR_ACCENT))
 	_rows.add_child(_stat_row("货币沉淀",
 		"+%d（累计 %d）" % [coins, GameState.coins_total], GameConfig.COLOR_ACCENT))
+	_rows.add_child(_stat_row("最高连击", "×%d" % max_combo, GameConfig.COLOR_INFO))
+	_rows.add_child(_stat_row("技巧得分", "+%d" % trick_score, GameConfig.COLOR_INFO))
 	_rows.add_child(_stat_row("基础得分", str(score), GameConfig.COLOR_TEXT))
 	_rows.add_child(_stat_row("难度加成", "×%.1f" % float(diff["score"]), GameConfig.COLOR_INFO))
 
@@ -151,9 +164,20 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 
 	# 纪录与解锁
 	var notes := ""
-	var new_record := GameState.record_score(level_index, diff_id, final_score)
+	var new_record: bool
+	if is_daily:
+		new_record = GameState.record_daily(final_score)
+	elif is_infinite:
+		new_record = GameState.record_score(level_index, diff_id, final_score)
+	else:
+		new_record = GameState.record_score(level_index, diff_id, final_score)
 	var unlocked_new := false
-	if new_record:
+	if is_daily:
+		notes += ("今日新纪录！" if new_record else "今日最佳：%d" % GameState.get_daily_best())
+	elif is_infinite:
+		notes += ("无限模式新纪录！" if new_record
+			else "无限模式最佳：%d" % GameState.get_best(level_index, diff_id))
+	elif new_record:
 		notes += "新纪录！本关最佳成绩已更新"
 	else:
 		notes += "本关最佳：%d" % GameState.get_best(level_index, diff_id)
@@ -183,7 +207,8 @@ func show_result(level_index: int, completed: bool, score: int, coins: int,
 	_note.add_theme_color_override("font_color",
 		GameConfig.COLOR_GOOD if completed else GameConfig.COLOR_DIM)
 
-	var has_next := completed and level_index + 1 < GameConfig.LEVELS.size()
+	var has_next: bool = completed and not is_infinite \
+		and level_index + 1 < GameConfig.LEVELS.size()
 	_next_btn.visible = has_next
 	_next_btn.disabled = not has_next
 

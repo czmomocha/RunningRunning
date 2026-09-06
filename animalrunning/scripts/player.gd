@@ -10,6 +10,7 @@ extends CharacterBody3D
 signal died
 signal hp_changed(hp: int, max_hp: int)
 signal hit_taken
+signal shield_blocked
 
 ## 横向加速度上限。traction = 1.0 时几乎瞬时响应，低抓地力下才会明显打滑
 const LANE_ACCEL := 240.0
@@ -29,6 +30,10 @@ var running: bool = false
 
 var max_hp: int = 3
 var hp: int = 3
+## 护盾（B2）：抵挡一次伤害后消失，视觉上是身周的半透明能量壳
+var shielded: bool = false
+## 冲刺穿透（B2）：期间免疫伤害并可穿过障碍物
+var phase_through: bool = false
 
 var _speed_mul: float = 1.0
 var _jump_mul: float = 1.0
@@ -36,6 +41,7 @@ var _lane_mul: float = 1.0
 
 var _model_pivot: Node3D
 var _model: Node3D
+var _shield_shell: MeshInstance3D
 var _legs: Array[Node3D] = []
 var _leg_rest_rot: Array[Vector3] = []
 
@@ -68,6 +74,7 @@ func _ready() -> void:
 
 	# 先套用默认角色，保证任何时刻都有可见模型；开局时会被 setup() 覆盖
 	setup(GameConfig.character(0), 3)
+	_build_shield_shell()
 	reset()
 
 
@@ -108,6 +115,27 @@ func _rebuild_model(file_name: String) -> void:
 		_leg_rest_rot.append(leg.rotation)
 
 
+## 护盾的视觉：身周一圈半透明能量壳（球体），平时隐藏
+func _build_shield_shell() -> void:
+	_shield_shell = MeshInstance3D.new()
+	_shield_shell.name = "ShieldShell"
+	var sphere := SphereMesh.new()
+	sphere.radius = 1.15
+	sphere.height = 2.3
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color8(0x7f, 0xe3, 0xe0, 90)
+	mat.emission_enabled = true
+	mat.emission = Color8(0x7f, 0xe3, 0xe0)
+	mat.emission_energy = 0.5
+	mat.roughness = 0.2
+	_shield_shell.mesh = sphere
+	_shield_shell.material_override = mat
+	_shield_shell.position.y = 0.85
+	_shield_shell.visible = false
+	add_child(_shield_shell)
+
+
 # ---------------------------------------------------------------- 生命周期
 func reset() -> void:
 	lane = GameConfig.LANE_COUNT / 2
@@ -115,6 +143,8 @@ func reset() -> void:
 	alive = true
 	running = false
 	hp = max_hp
+	shielded = false
+	phase_through = false
 	velocity = Vector3.ZERO
 	_bob_time = 0.0
 	_lean = 0.0
@@ -127,12 +157,14 @@ func reset() -> void:
 	_last_step = 0
 	_falling = false
 
-	collision_mask = GameConfig.LAYER_WORLD | GameConfig.LAYER_OBSTACLE
+	_update_collision_mask()
 	position = Vector3(GameConfig.lane_x(lane), 0.05, GameConfig.PLAYER_START_Z)
 	_model_pivot.rotation = Vector3.ZERO
 	_model_pivot.position = Vector3.ZERO
 	if _model != null:
 		_model.visible = true
+	if _shield_shell != null:
+		_shield_shell.visible = false
 
 
 func die() -> void:
@@ -154,17 +186,26 @@ func die() -> void:
 	emit_signal("died")
 
 
-## 受到一次伤害，返回是否真的扣血（无敌期间或非对局中返回 false）
+## 受到一次伤害，返回是否真的扣血（无敌 / 冲刺穿透期间或非对局中返回 false）。
+## 有护盾时消耗护盾抵挡本次伤害——不掉血、不减速，也不计入「无伤」统计。
 func take_hit() -> bool:
-	if not alive or not running or _invincible > 0.0:
+	if not alive or not running or _invincible > 0.0 or phase_through:
+		return false
+
+	if shielded:
+		set_shield(false)
+		_invincible = GameConfig.INVINCIBLE_TIME * 0.6
+		_stuck_frames = 0
+		Sfx.play("shield_break")
+		emit_signal("shield_blocked")
+		_update_collision_mask()
 		return false
 
 	hp -= 1
 	_invincible = GameConfig.INVINCIBLE_TIME
 	_hit_slow = GameConfig.HIT_RECOVER_TIME
 	_stuck_frames = 0
-	# 无敌期间可穿过障碍物，避免卡在障碍里连续掉血
-	collision_mask = GameConfig.LAYER_WORLD
+	_update_collision_mask()
 
 	emit_signal("hit_taken")
 	emit_signal("hp_changed", hp, max_hp)
@@ -175,6 +216,27 @@ func take_hit() -> bool:
 		# 只剩 1 点生命时音调更高更急，听觉上就能感到危险
 		Sfx.play("hit", 1.16 if hp == 1 else 1.0)
 	return true
+
+
+## 护盾开关（B2）：true 时显示能量壳
+func set_shield(value: bool) -> void:
+	shielded = value
+	if _shield_shell != null:
+		_shield_shell.visible = value
+
+
+## 冲刺穿透开关（B2）：期间可穿过障碍且免疫伤害
+func set_phase_through(value: bool) -> void:
+	phase_through = value
+	_update_collision_mask()
+
+
+## 无敌 / 冲刺 / 正常三种状态共用一套碰撞掩码规则：
+## 无敌与冲刺期间不与障碍物碰撞（可穿过），否则会被挡住。
+func _update_collision_mask() -> void:
+	var passable := _invincible > 0.0 or phase_through
+	collision_mask = GameConfig.LAYER_WORLD if passable \
+		else GameConfig.LAYER_WORLD | GameConfig.LAYER_OBSTACLE
 
 
 ## 回复生命，返回是否真的回上了（满血时返回 false，让计数器不被白白清零）
@@ -282,11 +344,12 @@ func _update_invincible(delta: float) -> void:
 	_invincible -= delta
 	if _invincible <= 0.0:
 		_invincible = 0.0
-		collision_mask = GameConfig.LAYER_WORLD | GameConfig.LAYER_OBSTACLE
+		_update_collision_mask()
 		_model.visible = true
 	else:
-		# 闪烁提示无敌状态
-		_model.visible = fmod(_invincible * GameConfig.INVINCIBLE_BLINK, 1.0) > 0.5
+		# 闪烁提示无敌状态（冲刺穿透期间不闪烁，靠 FOV 与速度表达）
+		if not phase_through:
+			_model.visible = fmod(_invincible * GameConfig.INVINCIBLE_BLINK, 1.0) > 0.5
 
 
 func _animate(delta: float) -> void:

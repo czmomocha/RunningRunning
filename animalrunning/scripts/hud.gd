@@ -14,6 +14,7 @@ var _font: Font
 
 var _score_label: Label
 var _coin_label: Label
+var _combo_label: Label
 var _heal_bar: ProgressBar
 var _heal_fill: StyleBoxFlat
 var _heal_label: Label
@@ -30,12 +31,25 @@ var _hp_cells: Array[Panel] = []
 var _minimap: MiniMap
 var _damage_flash: ColorRect
 var _hp_warning := false
+## 道具状态标签（B2）：id -> Label
+var _powerup_labels: Dictionary = {}
 
 
 func setup(world: World) -> void:
 	_world = world
 	_font = UiTheme.body_font()
 	_build_ui()
+	# 无限模式：主题段切换时刷新关卡名与路况（B1）
+	world.stage_changed.connect(_on_stage_changed)
+
+
+## 无限模式切主题段时更新中央信息
+func _on_stage_changed() -> void:
+	if _world == null:
+		return
+	_level_label.text = _world.level_name
+	_sub_label.text = _world.level_subtitle
+	_trait_label.text = "　·　".join(GameConfig.theme_traits(_world.level_theme))
 
 
 func _build_ui() -> void:
@@ -84,6 +98,11 @@ func _build_ui() -> void:
 	_coin_label = _label("0", 19, GameConfig.COLOR_ACCENT)
 	coin_row.add_child(_coin_label)
 
+	# 连击（B3）：连击 ≥2 时显示，随等级变色
+	_combo_label = _label("", 19, GameConfig.COLOR_INFO)
+	_combo_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	coin_row.add_child(_combo_label)
+
 	# ---------------------------------------------------------- 回血进度
 	# 「吃满 25 个方块回 1 血」原本是隐藏机制，这里显式呈现出来
 	var heal_row := HBoxContainer.new()
@@ -112,6 +131,18 @@ func _build_ui() -> void:
 	_heal_label = _label("", 13, GameConfig.COLOR_GOOD)
 	_heal_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	heal_row.add_child(_heal_label)
+
+	# ---------------------------------------------------------- 道具状态（B2）
+	# 激活中的道具：名称 + 剩余时间；护盾为常驻（无时限）
+	var powerup_row := HBoxContainer.new()
+	powerup_row.add_theme_constant_override("separation", 10)
+	powerup_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left.add_child(powerup_row)
+	for id in GameConfig.POWERUPS.keys():
+		var l := _label("", 13, GameConfig.powerup(String(id))["color"])
+		l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		powerup_row.add_child(l)
+		_powerup_labels[String(id)] = l
 
 	# 中：关卡名
 	var mid_holder := Control.new()
@@ -167,8 +198,8 @@ func _build_ui() -> void:
 	_hp_row = HBoxContainer.new()
 	_hp_row.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_hp_row.offset_left = 28.0
-	# 左上信息面板现在多了一行回血进度条，血条要相应下移避免重叠
-	_hp_row.offset_top = 152.0
+	# 左上信息面板已有 得分/方块/回血/道具 四行，血条要相应下移避免重叠
+	_hp_row.offset_top = 180.0
 	_hp_row.add_theme_constant_override("separation", 8)
 	_hp_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(_hp_row)
@@ -321,9 +352,19 @@ func _update_sound_btn() -> void:
 
 ## 受击时屏幕闪一下红光
 func flash_damage() -> void:
+	_flash_screen(GameConfig.COLOR_BAD, 0.40)
+
+
+## 护盾挡下一次伤害（B2）：闪一下青光，与受伤的红色区分开
+func flash_shield() -> void:
+	_flash_screen(Color8(0x7f, 0xe3, 0xe0), 0.35)
+
+
+func _flash_screen(color: Color, strength: float) -> void:
 	if _damage_flash == null:
 		return
-	_damage_flash.modulate.a = 0.40
+	_damage_flash.color = color
+	_damage_flash.modulate.a = strength
 	var tween := create_tween()
 	tween.tween_property(_damage_flash, "modulate:a", 0.0, 0.45)
 
@@ -341,8 +382,29 @@ func _process(_delta: float) -> void:
 
 	_score_label.text = "%d" % _world.score
 	_coin_label.text = "%d" % _world.coins
-	_progress_label.text = "%d / %d m" % [int(_world.distance), int(_world.target_distance)]
+	_progress_label.text = "%d m" % int(_world.distance) if _world.infinite \
+		else "%d / %d m" % [int(_world.distance), int(_world.target_distance)]
 	_speed_label.text = "%.0f km/h" % (_world.speed * 3.6)
+
+	# 连击（B3）：≥2 级才显示；等级越高越亮，倒计时结束自动消失
+	if _world.combo >= 2:
+		var t := clampf(_world.combo / 20.0, 0.0, 1.0)
+		var color := Color8(0x7d, 0xc8, 0xff).lerp(GameConfig.COLOR_ACCENT, t)
+		_combo_label.text = "×%d" % _world.combo
+		_combo_label.add_theme_color_override("font_color", color)
+	else:
+		_combo_label.text = ""
+
+	# 道具状态（B2）：限时道具显示剩余秒，护盾常驻显示
+	for id in _powerup_labels.keys():
+		var l: Label = _powerup_labels[id]
+		var info := GameConfig.powerup(String(id))
+		if id == "shield":
+			l.text = "%s ●" % info["name"] if _world.player.shielded else ""
+		elif _world.powerup_timers.has(id):
+			l.text = "%s %.0fs" % [info["name"], float(_world.powerup_timers[id])]
+		else:
+			l.text = ""
 
 	# 回血进度：满血时提示「已就绪」，避免玩家以为进度卡住了
 	var full := _world.player.hp >= _world.player.max_hp
@@ -364,6 +426,7 @@ func _process(_delta: float) -> void:
 
 	_minimap.progress = _world.get_progress()
 	_minimap.enemies = _world.get_enemy_progress()
+	_minimap.infinite = _world.infinite
 	_minimap.queue_redraw()
 
 
@@ -380,10 +443,11 @@ func _label(text: String, size: int, color: Color) -> Label:
 
 
 # ================================================================ 小地图
-## 横向进度条：起点 -> 玩家 -> 追兵 -> 终点
+## 横向进度条：起点 -> 玩家 -> 追兵 -> 终点（无限模式终点换为 ∞）
 class MiniMap extends Control:
 	var progress: float = 0.0
 	var enemies: Array[float] = []
+	var infinite: bool = false
 
 	const TRACK_H := 12.0
 	const PAD := 30.0
@@ -403,8 +467,13 @@ class MiniMap extends Control:
 		# 起点 / 终点
 		var end_x := PAD + w
 		draw_circle(Vector2(PAD, y), 6.0, Color8(0xa8, 0xba, 0xd8))
-		draw_rect(Rect2(end_x - 2.0, y - 17.0, 4.0, 28.0), GameConfig.COLOR_ACCENT, true)
-		draw_rect(Rect2(end_x - 2.0, y - 17.0, 15.0, 10.0), GameConfig.COLOR_ACCENT, true)
+		if infinite:
+			# 无限模式没有终点旗，画一个 ∞
+			draw_string(UiTheme.body_font(), Vector2(end_x - 34.0, y + 8.0), "∞",
+				HORIZONTAL_ALIGNMENT_LEFT, -1.0, 26, GameConfig.COLOR_ACCENT)
+		else:
+			draw_rect(Rect2(end_x - 2.0, y - 17.0, 4.0, 28.0), GameConfig.COLOR_ACCENT, true)
+			draw_rect(Rect2(end_x - 2.0, y - 17.0, 15.0, 10.0), GameConfig.COLOR_ACCENT, true)
 
 		# 追兵
 		for p in enemies:
@@ -420,9 +489,10 @@ class MiniMap extends Control:
 
 		# 文字
 		var font := UiTheme.body_font()
-		draw_string(font, Vector2(PAD - 6.0, y + 27.0), "起点",
+		draw_string(font, Vector2(PAD - 6.0, y + 27.0), "起点" if not infinite else "",
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, GameConfig.COLOR_MUTED)
-		draw_string(font, Vector2(end_x - 26.0, y + 27.0), "终点",
-			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, GameConfig.COLOR_MUTED)
+		if not infinite:
+			draw_string(font, Vector2(end_x - 26.0, y + 27.0), "终点",
+				HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, GameConfig.COLOR_MUTED)
 		draw_string(font, Vector2(PAD + w * 0.5 - 22.0, y + 27.0), "%d%%" % int(progress * 100.0),
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, 14, GameConfig.COLOR_ACCENT)

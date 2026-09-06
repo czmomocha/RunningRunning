@@ -27,6 +27,7 @@ func _ready() -> void:
 
 	world.player.hp_changed.connect(hud.set_hp)
 	world.player.hit_taken.connect(hud.flash_damage)
+	world.player.shield_blocked.connect(hud.flash_shield)
 	world.player.hit_taken.connect(func() -> void: _hits_taken += 1)
 	world.player_died.connect(_on_player_died)
 	world.level_completed.connect(_on_level_completed)
@@ -92,7 +93,8 @@ func _next_level() -> void:
 func _finish(completed: bool, score: int, coins: int, distance: float) -> void:
 	_state = State.RESULT
 	hud.visible = false
-	ui.show_result(GameState.current_level, completed, score, coins, distance, _hits_taken)
+	ui.show_result(GameState.current_level, completed, score, coins, distance, _hits_taken,
+		world.trick_score, world.max_combo)
 
 
 func _on_player_died(score: int, coins: int, distance: float) -> void:

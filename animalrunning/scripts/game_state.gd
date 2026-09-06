@@ -39,6 +39,10 @@ var level_clears: Dictionary = {}
 ## 已解锁的成就 id -> true
 var achievements: Dictionary = {}
 
+# ---------------------------------------------------------------- 每日挑战（B1）
+## 键：日期字符串 "YYYY-MM-DD"，值：当日最佳分数
+var daily_best: Dictionary = {}
+
 
 func _ready() -> void:
 	load_save()
@@ -83,6 +87,11 @@ func load_save() -> void:
 	if saved_ach is Dictionary:
 		achievements = saved_ach
 
+	# ---- 每日挑战
+	var saved_daily = file.get_value("meta", "daily_best", {})
+	if saved_daily is Dictionary:
+		daily_best = saved_daily
+
 	# 旧档迁移：当前选择的角色若未解锁（曾经全解锁的存档），回退到第一个已解锁角色
 	if not is_character_unlocked(character_index):
 		for i in GameConfig.CHARACTERS.size():
@@ -103,6 +112,7 @@ func save() -> void:
 	file.set_value("meta", "coins", coins_total)
 	file.set_value("meta", "unlocked_characters", unlocked_characters)
 	file.set_value("meta", "achievements", achievements)
+	file.set_value("meta", "daily_best", daily_best)
 
 	file.set_value("stats", "runs", stats_runs)
 	file.set_value("stats", "distance", stats_distance)
@@ -245,6 +255,27 @@ func check_achievements() -> Array[String]:
 ## 已解锁成就数 / 总数
 func achievement_count() -> int:
 	return achievements.size()
+
+
+# ---------------------------------------------------------------- 每日挑战（B1）
+## 今日最佳分数；返回是否刷新了纪录
+func record_daily(score: int) -> bool:
+	var today := Time.get_date_string_from_system()
+	if score > int(daily_best.get(today, 0)):
+		daily_best[today] = score
+		# 只保留最近 30 天，存档不至于无限膨胀
+		if daily_best.size() > 30:
+			var keys := daily_best.keys()
+			keys.sort()
+			while keys.size() > 30:
+				daily_best.erase(keys.pop_front())
+		save()
+		return true
+	return false
+
+
+func get_daily_best() -> int:
+	return int(daily_best.get(Time.get_date_string_from_system(), 0))
 
 
 # ---------------------------------------------------------------- 对局参数

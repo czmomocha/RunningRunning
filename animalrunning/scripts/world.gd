@@ -11,6 +11,8 @@ extends Node3D
 
 signal player_died(score: int, coins: int, distance: float)
 signal level_completed(score: int, coins: int, distance: float)
+## 无限模式：主题段切换时通知 HUD 更新关卡名与路况
+signal stage_changed
 
 const CAM_LOOK_AHEAD := 8.0
 const CAM_FOLLOW_X := 0.45
@@ -39,9 +41,19 @@ var distance: float = 0.0
 var score: int = 0
 var coins: int = 0
 var target_distance: float = 1000.0
+## 技巧分（B3）：连击追加 + 跳栏 + 擦身 + 飞坑，独立于距离与方块累加
+var trick_score: int = 0
+## 当前连击数与最高连击（B3）
+var combo: int = 0
+var max_combo: int = 0
 var player: Player
 ## 当前逆风系数（1.0 表示无风），供 HUD 显示阵风提示
 var wind_factor: float = 1.0
+## 是否无限模式 / 每日挑战（B1）
+var infinite: bool = false
+var daily: bool = false
+## 当前激活的道具及其剩余时间（B2）：id -> 秒
+var powerup_timers: Dictionary = {}
 
 ## 本局配置
 var level_name: String = ""
@@ -66,6 +78,7 @@ var _enemy_pool: Array[Enemy] = []
 var _obstacle_pool: Array[Node3D] = []
 var _coin_pool: Array[Node3D] = []
 var _deco_pool: Array[Node3D] = []
+var _powerup_pool: Array[Area3D] = []
 var _rng := RandomNumberGenerator.new()
 var _time: float = 0.0
 var _enemy_timer: float = 0.0
@@ -75,6 +88,10 @@ var _warn_timer: float = 0.0
 var _wind: float = 0.0
 var _gust_audible := false
 var _track_width: float = 0.0
+# B3：连击倒计时 / 滞空区间（起跳 z）/ 无限模式主题段索引
+var _combo_timer: float = 0.0
+var _air_z_start: float = NAN
+var _infinite_stage: int = -1
 
 
 func _ready() -> void:
@@ -254,25 +271,64 @@ func _build_chunk_floor(c: Chunk) -> void:
 
 
 # ================================================================ 开局 / 重置
-## 按当前选中的关卡、难度、角色开始一局
+## 按当前选中的关卡、难度、角色开始一局。
+## level_index 为负数时是无限模式（B1）：-1 普通，-2 每日挑战（按日期定种子）。
 func start_run(level_index: int) -> void:
-	_level = GameConfig.level(level_index)
-	_diff = GameConfig.difficulty(GameState.difficulty_index)
+	infinite = GameConfig.is_infinite(level_index)
+	daily = level_index == GameConfig.DAILY_LEVEL
+	# 每日挑战：种子 = 当天日期，全世界同一天拿到同一张图
+	if daily:
+		_rng.seed = hash(Time.get_date_string_from_system())
+	elif not infinite:
+		_rng.randomize()
+
+	if infinite:
+		_level = {}
+		_diff = GameConfig.difficulty(GameState.difficulty_index)
+		level_name = "每日挑战" if daily else "无限模式"
+		level_subtitle = "今日种子 · 同图竞速" if daily else "生存到底"
+		_speed_mul = float(_diff.get("speed", 1.0))
+		_obstacle_mul = float(_diff.get("obstacle", 1.0))
+		_enemy_mul = float(_diff.get("enemy", 1.0))
+		_enemy_speed_mul = 1.08
+		_infinite_stage = -1
+		target_distance = INF
+		_update_infinite_stage(true)
+	else:
+		_level = GameConfig.level(level_index)
+		_diff = GameConfig.difficulty(GameState.difficulty_index)
+		level_name = String(_level.get("name", ""))
+		level_subtitle = String(_level.get("subtitle", ""))
+		level_theme = String(_level.get("theme", "grass"))
+		target_distance = float(_level.get("distance", 1000.0))
+		_speed_mul = float(_diff.get("speed", 1.0))
+		_obstacle_mul = float(_diff.get("obstacle", 1.0))
+		_enemy_mul = float(_diff.get("enemy", 1.0))
+		_enemy_speed_mul = float(_level.get("enemy_speed", 1.0))
+		_apply_theme(GameConfig.theme(level_theme))
+
 	var ch := GameConfig.character(GameState.character_index)
-
-	level_name = String(_level.get("name", ""))
-	level_subtitle = String(_level.get("subtitle", ""))
-	level_theme = String(_level.get("theme", "grass"))
-	target_distance = float(_level.get("distance", 1000.0))
-	_speed_mul = float(_diff.get("speed", 1.0))
-	_obstacle_mul = float(_diff.get("obstacle", 1.0))
-	_enemy_mul = float(_diff.get("enemy", 1.0))
-	_enemy_speed_mul = float(_level.get("enemy_speed", 1.0))
-
-	_apply_theme(GameConfig.theme(String(_level.get("theme", "grass"))))
 	player.setup(ch, GameState.final_hp())
 	reset_run()
 	running = true
+
+
+## 无限模式：每 INFINITE_STAGE 米切换一次主题（按关卡表顺序循环）。
+## 已生成地块会在回收重装填时自然换色，形成一段过渡带。
+func _update_infinite_stage(force := false) -> void:
+	var stage := int(distance / GameConfig.INFINITE_STAGE)
+	if stage == _infinite_stage and not force:
+		return
+	_infinite_stage = stage
+	var idx := stage % GameConfig.LEVELS.size()
+	var lv: Dictionary = GameConfig.level(idx)
+	var theme_name := String(lv.get("theme", "grass"))
+	_apply_theme(GameConfig.theme(theme_name))
+	# 关卡名随时告诉玩家当前跑到哪一段
+	level_theme = theme_name
+	level_name = "第 %d 段 · %s" % [stage + 1, String(lv.get("name", ""))]
+	level_subtitle = String(lv.get("subtitle", ""))
+	emit_signal("stage_changed")
 
 
 func _apply_theme(t: Dictionary) -> void:
@@ -292,10 +348,21 @@ func reset_run() -> void:
 	distance = 0.0
 	score = 0
 	coins = 0
+	trick_score = 0
+	combo = 0
+	max_combo = 0
 	_time = 0.0
 	_coins_since_heal = 0
 	_warn_timer = 1.5
 	_enemy_timer = GameConfig.ENEMY_SPAWN_MIN
+	_combo_timer = 0.0
+	_air_z_start = NAN
+	# 道具效果全部清空（护盾也只在单局内有效）
+	for type in powerup_timers.keys():
+		_end_powerup(String(type))
+	powerup_timers.clear()
+	player.set_shield(false)
+	player.set_phase_through(false)
 
 	# 回收所有敌人
 	for e in _active_enemies:
@@ -355,15 +422,35 @@ func _physics_process(delta: float) -> void:
 		wind_factor = 1.0 - _wind * gust * gust
 		speed *= wind_factor
 
+	# 冲刺道具：直接放大前进速度（B2）
+	if powerup_timers.has("sprint"):
+		speed = minf(speed * GameConfig.SPRINT_SPEED_MUL, GameConfig.MAX_SPEED * 1.25)
+
 	player.forward_speed = speed
 	player.running = true
 
 	distance += speed * delta
-	score = int(distance * GameConfig.DISTANCE_SCORE) + coins * GameConfig.COIN_SCORE
 
+	# 计分（B3）：距离 + 方块 + 技巧，双倍分数道具期间整体翻倍
+	var base := int(distance * GameConfig.DISTANCE_SCORE) + coins * GameConfig.COIN_SCORE \
+		+ trick_score
+	score = base * 2 if powerup_timers.has("double") else base
+
+	# 连击窗口倒计时（B3）
+	if _combo_timer > 0.0:
+		_combo_timer -= delta
+		if _combo_timer <= 0.0:
+			combo = 0
+
+	_update_powerups(delta)
+	_update_tricks()
 	_recycle_chunks()
 	_update_enemies(delta)
 	_update_audio(delta)
+
+	# 无限模式：主题段轮换（B1）
+	if infinite:
+		_update_infinite_stage()
 
 	if distance >= target_distance:
 		distance = target_distance
@@ -400,6 +487,9 @@ func _update_audio(delta: float) -> void:
 func _process(delta: float) -> void:
 	_animate_pickups(delta)
 	_update_camera(delta, false)
+	# 冲刺时拉高 FOV 强化速度感，结束后平滑收回（B2）
+	var target_fov: float = GameConfig.SPRINT_FOV if powerup_timers.has("sprint") else 50.0
+	_camera.fov = lerpf(_camera.fov, target_fov, 1.0 - exp(-6.0 * delta))
 
 
 func _update_camera(delta: float, instant: bool) -> void:
@@ -424,6 +514,9 @@ func get_enemy_progress() -> Array[float]:
 
 
 func get_progress() -> float:
+	# 无限模式没有终点，进度条展示当前主题段内的进程
+	if infinite:
+		return fmod(distance, GameConfig.INFINITE_STAGE) / GameConfig.INFINITE_STAGE
 	return clampf(distance / maxf(target_distance, 1.0), 0.0, 1.0)
 
 
@@ -465,6 +558,9 @@ func _populate_chunk(c: Chunk) -> void:
 	for m in c.coins:
 		_release(_coin_pool, m)
 	c.coins.clear()
+	for p in c.powerups:
+		_release(_powerup_pool, p)
+	c.powerups.clear()
 	for d in c.decos:
 		_release(_deco_pool, d)
 	c.decos.clear()
@@ -538,11 +634,39 @@ func _populate_chunk(c: Chunk) -> void:
 		if not pit_rows.has(r):
 			_spawn_coins(c, blocked, z_world)
 
+	# ---------------------------------------------------------- 4) 道具（B2）
+	# 每个地块小概率出现一个道具；避开障碍行与坑洞附近，保证一定能吃到
+	if not safe and _rng.randf() < GameConfig.POWERUP_CHUNK_CHANCE and rows >= 5:
+		var pr := _rng.randi_range(2, rows - 3)
+		var near_pit: bool = (pit_rows.has(pr) or pit_rows.has(pr - 1) or pit_rows.has(pr + 1))
+		if not near_pit:
+			var pz := c.start_z - (float(pr) + 0.5) * GameConfig.ROW_LENGTH
+			var blocked_lanes := {}
+			for o in c.obs:
+				if float(o["z1"]) < pz + 3.0 and float(o["z0"]) > pz - 3.0:
+					for l in range(int(o["l0"]), int(o["l1"]) + 1):
+						blocked_lanes[l] = true
+			var free_lanes := []
+			for i in GameConfig.LANE_COUNT:
+				if not blocked_lanes.has(i):
+					free_lanes.append(i)
+			if not free_lanes.is_empty():
+				var pl: int = free_lanes[_rng.randi() % free_lanes.size()]
+				_place_powerup(c, GameConfig.pick_powerup(_rng),
+					GameConfig.lane_x(pl), 1.0, pz)
+
 	_spawn_decorations(c)
 
 
 func _obstacle_chance() -> float:
-	var base := float(_level.get("obstacle", 0.55)) if not _level.is_empty() else 0.55
+	# 无限模式：障碍密度随里程持续爬升（0.5 → 0.8）
+	var base: float
+	if infinite:
+		base = 0.5 + distance * 0.00006
+	elif not _level.is_empty():
+		base = float(_level.get("obstacle", 0.55))
+	else:
+		base = 0.55
 	return clampf((base + distance * 0.00012) * _obstacle_mul, 0.2, 0.95)
 
 
@@ -576,12 +700,15 @@ func _spawn_obstacle(c: Chunk, lane: int, z_world: float) -> void:
 	c.root.add_child(obs)
 	c.obstacles.append(obs)
 
-	# 记录车道占用信息，供敌人 AI 避障查询
+	# 记录车道占用信息，供敌人 AI 避障查询；
+	# x / low 额外供技巧判定（B3）使用
 	c.obs.append({
 		"l0": lane,
 		"l1": lane,
 		"z0": z_world + size.z * 0.5,
 		"z1": z_world - size.z * 0.5,
+		"x": GameConfig.lane_x(lane),
+		"low": size.y <= 1.0,
 	})
 
 	# 矮栏上方放奖励金币，鼓励跳跃
@@ -726,7 +853,18 @@ func _on_coin_picked(_body: Node3D, coin: Area3D) -> void:
 	coin.visible = false
 	coin.set_deferred("monitoring", false)  # 信号回调中必须延迟修改
 	coins += 1
-	score = int(distance * GameConfig.DISTANCE_SCORE) + coins * GameConfig.COIN_SCORE
+
+	# 连击（B3）：COMBO_WINDOW 秒内连续拾取则等级 +1，追加奖励分
+	if _combo_timer > 0.0:
+		combo += 1
+	else:
+		combo = 1
+	_combo_timer = GameConfig.COMBO_WINDOW
+	max_combo = maxi(max_combo, combo)
+	if combo > 1:
+		trick_score += (combo - 1) * GameConfig.COMBO_BONUS_PER_COIN
+
+	_refresh_score()
 
 	# 连续吃到方块时音高逐级上行（每 6 个循环一次），形成「连击」听感
 	Sfx.play("coin", 1.0 + float(coins % 6) * 0.06)
@@ -743,12 +881,203 @@ func _on_coin_picked(_body: Node3D, coin: Area3D) -> void:
 
 func _animate_pickups(delta: float) -> void:
 	for c in _chunks:
+		# 金币：旋转 + 浮动；磁铁生效时朝玩家飞
 		for coin in c.coins:
 			if not coin.visible:
 				continue
 			coin.rotate_y(delta * 2.4)
 			var mesh := coin.get_node("Mesh") as MeshInstance3D
 			mesh.position.y = sin(_time * 3.0 + coin.position.z * 0.5) * 0.12
+			if powerup_timers.has("magnet"):
+				_magnet_pull(c, coin)
+		# 道具：更快的旋转 + 上下浮动，远处靠光柱识别
+		for pu in c.powerups:
+			if not pu.visible:
+				continue
+			pu.rotate_y(delta * 3.2)
+			var pmesh := pu.get_node("Mesh") as MeshInstance3D
+			pmesh.position.y = sin(_time * 2.6 + pu.position.z * 0.5) * 0.18
+
+
+## 磁铁（B2）：把附近金币往玩家身上拉。金币坐标是 chunk 局部坐标，要换算。
+func _magnet_pull(c: Chunk, coin: Area3D) -> void:
+	var world_z := coin.position.z + c.start_z
+	var dx := player.position.x - coin.position.x
+	var dz := player.position.z - world_z
+	if absf(dx) > GameConfig.MAGNET_RADIUS or absf(dz) > GameConfig.MAGNET_RADIUS:
+		return
+	var target := Vector3(player.position.x, 1.0, player.position.z - c.start_z)
+	coin.position = coin.position.move_toward(target, 30.0 * get_process_delta_time())
+
+
+## 即时刷新分数（主循环每帧也会重算，这里保证拾取当帧 HUD 就对）
+func _refresh_score() -> void:
+	var base := int(distance * GameConfig.DISTANCE_SCORE) + coins * GameConfig.COIN_SCORE \
+		+ trick_score
+	score = base * 2 if powerup_timers.has("double") else base
+
+
+# ================================================================ 道具（B2）
+## 拾取效果：磁铁 / 双倍 / 冲刺为限时效果，护盾为一次性。
+func _apply_powerup(type: String) -> void:
+	var info := GameConfig.powerup(type)
+	if type == "shield":
+		player.set_shield(true)
+		Sfx.play("shield_up")
+	else:
+		powerup_timers[type] = float(info["dur"])
+		if type == "sprint":
+			player.set_phase_through(true)
+	Sfx.play("powerup")
+
+
+func _update_powerups(delta: float) -> void:
+	for type in powerup_timers.keys():
+		powerup_timers[type] = float(powerup_timers[type]) - delta
+		if float(powerup_timers[type]) <= 0.0:
+			powerup_timers.erase(type)
+			_end_powerup(String(type))
+
+
+## 效果到期：只有冲刺需要显式恢复（穿障碍要关掉），其余靠 has() 判定自然失效
+func _end_powerup(type: String) -> void:
+	match type:
+		"sprint":
+			player.set_phase_through(false)
+
+
+func _on_powerup_picked(_body: Node3D, area: Area3D) -> void:
+	if not area.visible or not running:
+		return
+	area.visible = false
+	area.set_deferred("monitoring", false)
+	_apply_powerup(String(area.get_meta("type", "magnet")))
+
+
+func _place_powerup(c: Chunk, type: String, x: float, y: float, z_world: float) -> void:
+	var area := _acquire(_powerup_pool, _create_powerup)
+	var info := GameConfig.powerup(type)
+	area.position = Vector3(x, y, z_world - c.start_z)
+	area.visible = true
+	area.monitoring = true
+	area.set_meta("type", type)
+
+	var mesh := area.get_node("Mesh") as MeshInstance3D
+	(mesh.mesh as BoxMesh).size = info["size"]
+	var mat := mesh.material_override as StandardMaterial3D
+	var color: Color = info["color"]
+	mat.albedo_color = color
+	mat.emission = color
+	mesh.position = Vector3.ZERO
+	mesh.rotation = Vector3.ZERO
+
+	# 光柱：让远处一眼就能看到这里有个道具
+	var beam := area.get_node("Beam") as MeshInstance3D
+	var beam_mat := beam.material_override as StandardMaterial3D
+	beam_mat.albedo_color = Color(color.r, color.g, color.b, 0.16)
+	beam_mat.emission = color
+
+	c.root.add_child(area)
+	c.powerups.append(area)
+
+
+func _create_powerup() -> Area3D:
+	var area := Area3D.new()
+	area.collision_layer = GameConfig.LAYER_PICKUP
+	area.collision_mask = GameConfig.LAYER_PLAYER
+	area.monitoring = true
+	area.monitorable = false
+
+	# 本体：颜色 + 长宽高区分类型
+	var mesh := MeshInstance3D.new()
+	mesh.name = "Mesh"
+	mesh.mesh = BoxMesh.new()
+	var mat := StandardMaterial3D.new()
+	mat.emission_enabled = true
+	mat.emission_energy = 0.9
+	mat.roughness = 0.3
+	mat.metallic = 0.1
+	mesh.material_override = mat
+	area.add_child(mesh)
+
+	# 判定盒略大于本体，拾取手感更好
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.6, 1.6, 1.6)
+	col.shape = shape
+	area.add_child(col)
+
+	# 光柱：细高的半透明发光柱，从远处也能定位
+	var beam := MeshInstance3D.new()
+	beam.name = "Beam"
+	var bbox := BoxMesh.new()
+	bbox.size = Vector3(0.22, 7.0, 0.22)
+	beam.mesh = bbox
+	var bmat := StandardMaterial3D.new()
+	bmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bmat.emission_enabled = true
+	bmat.emission_energy = 0.35
+	bmat.roughness = 0.4
+	beam.material_override = bmat
+	beam.position = Vector3(0.0, 3.5, 0.0)
+	area.add_child(beam)
+
+	area.body_entered.connect(_on_powerup_picked.bind(area))
+	return area
+
+
+# ================================================================ 技巧计分（B3）
+## 每物理帧：追踪滞空区间（跳栏 / 飞坑在落地时结算），障碍通过时判定擦身。
+func _update_tricks() -> void:
+	if not player.is_on_floor():
+		if is_nan(_air_z_start):
+			_air_z_start = player.position.z
+		return
+	if not is_nan(_air_z_start):
+		_score_landing_tricks(_air_z_start, player.position.z)
+		_air_z_start = NAN
+	_score_near_misses()
+
+
+## 落地结算：滞空区间 [z_land, z_takeoff] 内越过的矮栏与坑洞
+func _score_landing_tricks(z_takeoff: float, z_land: float) -> void:
+	for c in _chunks:
+		for o in c.obs:
+			if not bool(o.get("low", false)) or bool(o.get("jump_scored", false)):
+				continue
+			var oz := (float(o["z0"]) + float(o["z1"])) * 0.5
+			if oz <= z_takeoff + 1.0 and oz >= z_land - 1.0 \
+					and absf(player.position.x - float(o["x"])) < 1.6:
+				o["jump_scored"] = true
+				_add_trick(GameConfig.TRICK_JUMP)
+		for p in c.pits:
+			if not bool(p.get("scored", false)) \
+					and float(p["z0"]) > z_land - 1.0 and float(p["z1"]) < z_takeoff + 1.0:
+				p["scored"] = true
+				_add_trick(GameConfig.TRICK_PIT)
+
+
+## 擦身而过：障碍完全落到身后时，横向距离在险区窗口内且人在地面
+func _score_near_misses() -> void:
+	for c in _chunks:
+		for o in c.obs:
+			if bool(o.get("passed", false)):
+				continue
+			if float(o["z1"]) < player.position.z - 0.8:
+				o["passed"] = true
+				# 矮栏绕行没有难度，只奖励高墙 / 大方块的擦身
+				if player.is_on_floor() and not bool(o.get("low", false)):
+					var dx := absf(player.position.x - float(o["x"]))
+					if dx > GameConfig.NEAR_MISS_MIN and dx < GameConfig.NEAR_MISS_MAX:
+						_add_trick(GameConfig.TRICK_NEAR_MISS)
+
+
+## 记一笔技巧分：连击越高，单次技巧的奖励越大
+func _add_trick(points: int) -> void:
+	var bonus := int(round(float(points) * (1.0 + float(combo) * 0.05)))
+	trick_score += bonus
+	_refresh_score()
+	Sfx.play("trick", 1.0 + float(combo % 8) * 0.05, -2.0)
 
 
 # ================================================================ 装饰（树木 / 岩石 / 路缘石）
@@ -817,7 +1146,9 @@ func _update_enemies(delta: float) -> void:
 
 
 func _max_enemies() -> int:
-	var base := int(round(float(_level.get("enemy_max", 2)) * _enemy_mul))
+	# 无限模式：敌人上限随里程缓慢上涨（2 → 4），难度倍率照常生效
+	var base := clampi(2 + int(distance / 700.0), 2, 4) if infinite \
+		else int(round(float(_level.get("enemy_max", 2)) * _enemy_mul))
 	var grow := 1 + int(distance / 450.0)
 	return clampi(mini(grow, base), 1, 4)
 
@@ -969,6 +1300,7 @@ class Chunk extends RefCounted:
 	var slabs: Array[FloorSlab] = []      # 按行切分的地面板块
 	var obstacles: Array[Node3D] = []     # 障碍节点
 	var coins: Array[Node3D] = []         # 能量方块
+	var powerups: Array[Area3D] = []      # 道具拾取物（B2）
 	var decos: Array[Node3D] = []         # 纯装饰
-	var obs: Array[Dictionary] = []       # 障碍的车道占用信息，供敌人 AI 查询
-	var pits: Array[Dictionary] = []      # 坑洞的 z 范围，供敌人 AI 查询
+	var obs: Array[Dictionary] = []       # 障碍的车道占用信息，供敌人 AI 与技巧判定查询
+	var pits: Array[Dictionary] = []      # 坑洞的 z 范围，供敌人 AI 与技巧判定查询

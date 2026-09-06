@@ -118,6 +118,69 @@ const ENEMY_JUMP_VELOCITY := 9.5    # 跳跃者的起跳速度（纯动画，不
 const COIN_SCORE := 10
 const DISTANCE_SCORE := 1.0     # 每米得分
 
+# ---------------------------------------------------------------- 连击 / 技巧计分（B3）
+## 连击：连续拾取能量方块的间隔不超过 COMBO_WINDOW 秒则连击 +1，超时清零。
+## 每级连击让单个方块额外多得分；「玩得好」与「活得久」从此解耦。
+const COMBO_WINDOW := 4.0
+const COMBO_BONUS_PER_COIN := 2   # 每级连击给方块追加的分数
+const TRICK_JUMP := 25            # 跳过矮栏
+const TRICK_NEAR_MISS := 15       # 与高墙擦身而过
+const TRICK_PIT := 30             # 飞越坑洞
+## 擦身判定的横向距离窗口（米）：小于下限视为已撞上，大于上限不算险
+const NEAR_MISS_MIN := 1.2
+const NEAR_MISS_MAX := 2.6
+
+# ---------------------------------------------------------------- 无限模式（B1）
+## 关卡地图上的特殊入口。负数索引不会与正常关卡冲突，
+## 记分键（如 "-1_normal"）天然与正常关卡隔离，最佳成绩直接复用现有字典。
+const INFINITE_LEVEL := -1       # 无限模式：生存到底，主题随里程轮换
+const DAILY_LEVEL := -2          # 每日挑战：同一天全世界同一张图（种子 = 日期）
+## 每 500 m 切换一次主题（按 LEVELS 的顺序循环），场景与机制同步渐变
+const INFINITE_STAGE := 500.0
+
+
+static func is_infinite(level_index: int) -> bool:
+	return level_index < 0
+
+
+# ---------------------------------------------------------------- 道具（B2）
+## id     唯一标识
+## name   显示名
+## color  视觉主色（拾取物发光色 / HUD 状态色）
+## size   拾取物碰撞盒尺寸（视觉上用不同长宽高区分类型）
+## dur    生效时长（秒）；0 表示无时限的一次性效果（护盾）
+## desc   HUD 提示文案
+const POWERUPS: Dictionary = {
+	"magnet": {
+		"name": "磁铁", "color": Color8(0x7d, 0xc8, 0xff),
+		"size": Vector3(1.1, 0.5, 1.1), "dur": 8.0,
+		"desc": "自动吸取能量方块",
+	},
+	"shield": {
+		"name": "护盾", "color": Color8(0x7f, 0xe3, 0xe0),
+		"size": Vector3(0.55, 1.15, 0.55), "dur": 0.0,
+		"desc": "抵挡一次伤害",
+	},
+	"double": {
+		"name": "双倍分数", "color": Color8(0xff, 0xcc, 0x4d),
+		"size": Vector3(0.78, 0.78, 0.78), "dur": 10.0,
+		"desc": "期间得分翻倍",
+	},
+	"sprint": {
+		"name": "冲刺", "color": Color8(0xff, 0x8c, 0x3a),
+		"size": Vector3(0.5, 0.5, 1.35), "dur": 4.0,
+		"desc": "高速并穿过障碍",
+	},
+}
+## 单个地块出现道具的概率
+const POWERUP_CHUNK_CHANCE := 0.18
+## 磁铁吸力半径（米）
+const MAGNET_RADIUS := 7.0
+## 冲刺期间的前进速度倍率
+const SPRINT_SPEED_MUL := 1.35
+## 冲刺时相机 FOV 从 50 拉到这个值，强化速度感
+const SPRINT_FOV := 62.0
+
 # ---------------------------------------------------------------- 碰撞层
 const LAYER_PLAYER := 1
 const LAYER_WORLD := 2          # 地面
@@ -421,6 +484,17 @@ static func theme(name: String) -> Dictionary:
 
 static func enemy_kind(index: int) -> Dictionary:
 	return ENEMY_KINDS[clampi(index, 0, ENEMY_KINDS.size() - 1)]
+
+
+## 道具表的安全取值（未知 id 回退到磁铁，避免手误崩掉）
+static func powerup(id: String) -> Dictionary:
+	return POWERUPS.get(id, POWERUPS["magnet"])
+
+
+## 随机挑一种道具（磁铁 / 护盾 / 双倍 / 冲刺 等概率）
+static func pick_powerup(rng: RandomNumberGenerator) -> String:
+	var keys := POWERUPS.keys()
+	return String(keys[rng.randi() % keys.size()])
 
 
 ## 按凶悍度加权随机挑一种追兵。

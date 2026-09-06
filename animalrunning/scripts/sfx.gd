@@ -139,6 +139,10 @@ func _build_bank() -> void:
 	_bank["ui_select"] = _make_ui_select()
 	_bank["ui_confirm"] = _make_ui_confirm()
 	_bank["ui_back"] = _make_ui_back()
+	_bank["powerup"] = _make_powerup()
+	_bank["shield_up"] = _make_shield_up()
+	_bank["shield_break"] = _make_shield_break()
+	_bank["trick"] = _make_trick()
 
 
 # ---------------------------------------------------------------- 跑动
@@ -339,6 +343,46 @@ func _make_ui_back() -> AudioStreamWAV:
 	var b := _blank(0.20)
 	_osc(b, 0.00, 0.08, G5, G5, 0.14, Wave.TRI, 5.0)
 	_osc(b, 0.06, 0.12, D5, D5, 0.14, Wave.TRI, 4.5)
+	return _to_stream(b)
+
+
+# ---------------------------------------------------------------- 道具 / 技巧（B2 / B3）
+## 拾取道具：明亮的快速琶音上行，结尾带一点闪光感
+func _make_powerup() -> AudioStreamWAV:
+	var b := _blank(0.55)
+	var notes := [C5, E5, G5, C6]
+	for i in notes.size():
+		var f: float = notes[i]
+		var start := float(i) * 0.07
+		_osc(b, start, 0.16, f, f, 0.18, Wave.SQUARE, 3.4)
+		_osc(b, start, 0.16, f * 2.0, f * 2.0, 0.05, Wave.SINE, 4.2)
+	_osc(b, 0.28, 0.24, E6, E6, 0.09, Wave.SINE, 3.0)
+	return _to_stream(b)
+
+
+## 获得护盾：低频沉稳 + 高频闪烁，有「能量展开」的感觉
+func _make_shield_up() -> AudioStreamWAV:
+	var b := _blank(0.45)
+	_osc(b, 0.00, 0.30, 196.0, 196.0, 0.16, Wave.TRI, 2.6)
+	_osc(b, 0.04, 0.26, G5, G5, 0.13, Wave.SINE, 3.2)
+	_osc(b, 0.16, 0.24, E6, E6, 0.07, Wave.SINE, 3.8)
+	return _to_stream(b)
+
+
+## 护盾破碎：噪声爆破 + 短下行，干脆利落
+func _make_shield_break() -> AudioStreamWAV:
+	var b := _blank(0.32)
+	_noise(b, 0.0, 0.16, 0.30, 11.0, 0.35)
+	_osc(b, 0.0, 0.26, 880.0, 320.0, 0.16, Wave.SAW, 4.6)
+	_osc(b, 0.0, 0.12, 220.0, 110.0, 0.18, Wave.SINE, 6.0)
+	return _to_stream(b)
+
+
+## 技巧得分（跳栏 / 擦身 / 飞坑）：短促的高音双叮
+func _make_trick() -> AudioStreamWAV:
+	var b := _blank(0.20)
+	_osc(b, 0.00, 0.07, G6, G6, 0.14, Wave.SINE, 5.0)
+	_osc(b, 0.06, 0.12, C7, C7, 0.12, Wave.SINE, 5.5)
 	return _to_stream(b)
 
 

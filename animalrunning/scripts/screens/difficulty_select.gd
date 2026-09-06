@@ -141,11 +141,19 @@ func _select(index: int) -> void:
 
 ## 进入界面时刷新关卡信息与难度卡片
 func refresh() -> void:
-	var lv := GameConfig.level(GameState.current_level)
-	_level_title.text = "第 %d 关 · %s" % [GameState.current_level + 1, lv["name"]]
-	var traits := GameConfig.theme_traits(String(lv["theme"]))
-	_level_info.text = "%s　·　通关距离 %d m　·　路况：%s" % [
-		lv["subtitle"], int(lv["distance"]), "、".join(traits)]
+	if GameConfig.is_infinite(GameState.current_level):
+		_level_title.text = "每日挑战" if GameState.current_level == GameConfig.DAILY_LEVEL \
+			else "无限模式"
+		if GameState.current_level == GameConfig.DAILY_LEVEL:
+			_level_info.text = "今日种子 · 全世界同图竞速　·　当前今日最佳：%d" % GameState.get_daily_best()
+		else:
+			_level_info.text = "没有终点 · 主题每 500 m 轮换　·　看你能跑多远"
+	else:
+		var lv := GameConfig.level(GameState.current_level)
+		_level_title.text = "第 %d 关 · %s" % [GameState.current_level + 1, lv["name"]]
+		var traits := GameConfig.theme_traits(String(lv["theme"]))
+		_level_info.text = "%s　·　通关距离 %d m　·　路况：%s" % [
+			lv["subtitle"], int(lv["distance"]), "、".join(traits)]
 	_update_selection()
 
 

@@ -87,6 +87,22 @@ func _build() -> void:
 	_hint = UiTheme.label("", 16, GameConfig.COLOR_DIM, HORIZONTAL_ALIGNMENT_CENTER)
 	root.add_child(_hint)
 
+	# ---------------------------------------------------------- 无限模式 / 每日挑战（B1）
+	var special_row := HBoxContainer.new()
+	special_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	special_row.add_theme_constant_override("separation", 20)
+	root.add_child(special_row)
+
+	var infinite_btn := UiTheme.button("∞ 无限模式", GameConfig.COLOR_INFO,
+		Vector2(220.0, 50.0), 19)
+	infinite_btn.pressed.connect(func() -> void: _on_special_pressed(GameConfig.INFINITE_LEVEL))
+	special_row.add_child(infinite_btn)
+
+	var daily_btn := UiTheme.button("每日挑战", Color8(0xb8, 0xa4, 0xff),
+		Vector2(220.0, 50.0), 19)
+	daily_btn.pressed.connect(func() -> void: _on_special_pressed(GameConfig.DAILY_LEVEL))
+	special_row.add_child(daily_btn)
+
 
 func refresh() -> void:
 	for i in _nodes.size():
@@ -148,3 +164,9 @@ func _on_node_pressed(index: int) -> void:
 		return
 	GameState.current_level = index
 	level_selected.emit(index)
+
+
+## 无限模式 / 每日挑战入口（B1）：负数关卡索引，进难度选择后出发
+func _on_special_pressed(level_index: int) -> void:
+	GameState.current_level = level_index
+	level_selected.emit(level_index)
