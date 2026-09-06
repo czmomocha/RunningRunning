@@ -16,6 +16,10 @@ signal shield_blocked
 const LANE_ACCEL := 240.0
 ## 滑出赛道边缘的余量（不允许直接滑进虚空）
 const EDGE_MARGIN := 0.45
+## 长按连续变道：按下立即换一次道，继续按住经过起始间隔后按固定节奏连续变道。
+## 起始间隔略长，避免想单次变道时误触连换。
+const LANE_HOLD_DELAY := 0.26
+const LANE_HOLD_REPEAT := 0.16
 ## 低于此高度即认定「正在坠入坑洞」，用于播放坠落音
 const FALLING_Y := -1.5
 
@@ -60,6 +64,10 @@ var _falling := false
 
 var _swipe_start := Vector2.ZERO
 var _swipe_used := false
+
+# 长按连续变道：当前按住的方向与下次触发倒计时
+var _hold_dir: int = 0
+var _hold_cd: float = 0.0
 
 
 func _ready() -> void:
@@ -156,6 +164,8 @@ func reset() -> void:
 	_was_on_floor = true
 	_last_step = 0
 	_falling = false
+	_hold_dir = 0
+	_hold_cd = 0.0
 
 	_update_collision_mask()
 	position = Vector3(GameConfig.lane_x(lane), 0.05, GameConfig.PLAYER_START_Z)
@@ -274,6 +284,12 @@ func _physics_process(delta: float) -> void:
 		velocity.z = move_toward(velocity.z, 0.0, 60.0 * delta)
 
 	# --- 换道（带横向惯性；抓地力越低越容易滑过头）---
+	# 长按方向键连续变道：按住期间按固定节奏触发（手感优化）
+	if _hold_dir != 0:
+		_hold_cd -= delta
+		if _hold_cd <= 0.0:
+			_change_lane(_hold_dir)
+			_hold_cd = LANE_HOLD_REPEAT
 	var target_x := GameConfig.lane_x(target_lane)
 	var dx := target_x - position.x
 	var lane_speed := GameConfig.LANE_SWITCH_SPEED * _lane_mul
@@ -380,6 +396,12 @@ func _animate(delta: float) -> void:
 
 # ---------------------------------------------------------------- 输入
 func _unhandled_input(event: InputEvent) -> void:
+	# 松开事件任何时候都要处理：暂停 / 死亡期间松键若被拦掉，
+	# 按住变道的状态会残留，恢复游戏后角色会自己跑起来
+	if event is InputEventKey and not (event as InputEventKey).pressed:
+		_handle_key_release(event as InputEventKey)
+		return
+
 	if not alive or get_tree().paused:
 		return
 
@@ -420,14 +442,28 @@ func _handle_key(event: InputEventKey) -> void:
 		match code:
 			KEY_LEFT, KEY_A:
 				_change_lane(-1)
+				_hold_dir = -1
+				_hold_cd = LANE_HOLD_DELAY
 			KEY_RIGHT, KEY_D:
 				_change_lane(1)
+				_hold_dir = 1
+				_hold_cd = LANE_HOLD_DELAY
 			KEY_SPACE, KEY_UP, KEY_W:
 				_jump_buffer = GameConfig.JUMP_BUFFER_TIME
 			KEY_DOWN, KEY_S:
 				_fast_fall = true
-	elif not event.pressed and (code == KEY_DOWN or code == KEY_S):
-		_fast_fall = false
+
+
+## 松开按键：清除按住状态（任何时候都有效，见 _unhandled_input 的说明）
+func _handle_key_release(event: InputEventKey) -> void:
+	var code: int = event.physical_keycode
+	if code == KEY_NONE:
+		code = event.keycode
+	match code:
+		KEY_LEFT, KEY_A, KEY_RIGHT, KEY_D:
+			_hold_dir = 0
+		KEY_DOWN, KEY_S:
+			_fast_fall = false
 
 
 func _change_lane(dir: int) -> void:
